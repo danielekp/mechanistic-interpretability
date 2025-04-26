@@ -1,3 +1,4 @@
-env/
+./env/
 .ipynb_checkpoints/
-runs/
+./sparse-auto-encoder/runs/
+./sparse-auto-encoder/secret_tokens.py
