@@ -1,8 +1,0 @@
-transformers
-datasets
-torch
-tqdm
-numpy
-matplotlib
-accelerate
-tensorboard
