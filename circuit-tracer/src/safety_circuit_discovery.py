@@ -87,7 +87,6 @@ class SafetyCircuitAnalyzer:
         category_features = {}
         
         for category in self.feature_stats:
-            print(f"DEBUG \n category -> {category}")
             prompts_in_category = len(self.benchmark.get_by_category(category))
             feature_frequencies = {}
             
@@ -96,7 +95,6 @@ class SafetyCircuitAnalyzer:
                 frequency = len(activations) / prompts_in_category
                 # Calculate average activation strength
                 avg_activation = np.mean([a['activation'] for a in activations])
-                print(f"DEBUG \n frequency -> {frequency},avg_activation -> {avg_activation} ")
                 if frequency >= min_frequency and avg_activation >= min_activation:
                     feature_frequencies[feature] = {
                         'frequency': frequency,
@@ -142,6 +140,7 @@ class SafetyCircuitAnalyzer:
                     safe_mean = np.mean(safe_acts)
                     unsafe_mean = np.mean(unsafe_acts)
                     
+                    print(f"\n unsafe_mean -> {unsafe_mean}, safe_mean -> {safe_mean}")
                     if abs(unsafe_mean - safe_mean) > 0.2:  # Significant difference
                         differential_features.append({
                             'feature': feat,
