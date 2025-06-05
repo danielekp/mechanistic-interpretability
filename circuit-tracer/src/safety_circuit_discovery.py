@@ -113,12 +113,12 @@ class SafetyCircuitAnalyzer:
         
         return category_features
     
-    def find_contrasting_features(self, safe_category: str = "safe_contrast") -> Dict[str, Dict]:
+    def find_contrasting_features(self, safe_categories: List[str] = ["deception_safe_contrast", "harmful_content_safe_contrast", "power_seeking_safe_contrast", "manipulation_safe_contrast"]) -> Dict[str, Dict]:
         """Find features that differentiate safe vs unsafe responses."""
         
         contrastive_features = {}
         
-        unsafe_categories = [c for c in self.feature_stats.keys() if c != safe_category]
+        safe_categories = [c for c in self.feature_stats.keys() if c not in safe_categories]
         safe_features = set(self.feature_stats[safe_category].keys())
         
         for unsafe_cat in unsafe_categories:
