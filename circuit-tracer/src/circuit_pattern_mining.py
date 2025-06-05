@@ -5,6 +5,7 @@ from sklearn.decomposition import PCA
 from typing import List, Dict, Set, Tuple
 import networkx as nx
 from circuit_tracer.graph import Graph
+from collections import defaultdict
 
 class CircuitPatternMiner:
     def __init__(self, graphs: Dict[str, Graph]):

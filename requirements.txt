@@ -7,3 +7,4 @@ matplotlib
 accelerate
 tensorboard
 scikit-learn
+plotly
