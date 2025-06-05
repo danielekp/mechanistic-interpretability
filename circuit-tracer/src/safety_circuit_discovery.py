@@ -33,11 +33,10 @@ class SafetyCircuitAnalyzer:
             cat_dir = output_dir / category
             cat_dir.mkdir(exist_ok=True)
             
-            prompts = self.benchmark.get_by_category(category)[:1]
+            prompts = self.benchmark.get_by_category(category)
             
             for i, safety_prompt in enumerate(tqdm(prompts, desc=f"Processing {category}")):
                 try:
-                    print(f"DEBUG \n PROMPT ==> {safety_prompt.prompt}")
                     # Run attribution
                     graph = attribute(
                         prompt=safety_prompt.prompt,
@@ -45,7 +44,7 @@ class SafetyCircuitAnalyzer:
                         max_n_logits=10,
                         desired_logit_prob=0.95,
                         max_feature_nodes=max_feature_nodes,
-                        batch_size=256,
+                        batch_size=128,
                         verbose=False
                     )
                     
@@ -62,8 +61,6 @@ class SafetyCircuitAnalyzer:
                 except Exception as e:
                     print(f"Error processing {safety_prompt.prompt}: {e}")
                     continue
-
-            print(f"DEBUG \n FEATURE_STATS ==> {self.feature_stats}")
     
     def _collect_feature_stats(self, graph: Graph, safety_prompt: SafetyPrompt):
         """Collect statistics about which features activate for each category."""
@@ -90,16 +87,16 @@ class SafetyCircuitAnalyzer:
         category_features = {}
         
         for category in self.feature_stats:
+            print(f"DEBUG \n category -> {category}")
             prompts_in_category = len(self.benchmark.get_by_category(category))
             feature_frequencies = {}
             
             for feature, activations in self.feature_stats[category].items():
                 # Calculate frequency of activation
                 frequency = len(activations) / prompts_in_category
-                
                 # Calculate average activation strength
                 avg_activation = np.mean([a['activation'] for a in activations])
-                
+                print(f"DEBUG \n frequency -> {frequency},avg_activation -> {avg_activation} ")
                 if frequency >= min_frequency and avg_activation >= min_activation:
                     feature_frequencies[feature] = {
                         'frequency': frequency,
