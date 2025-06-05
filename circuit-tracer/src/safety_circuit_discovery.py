@@ -33,10 +33,11 @@ class SafetyCircuitAnalyzer:
             cat_dir = output_dir / category
             cat_dir.mkdir(exist_ok=True)
             
-            prompts = self.benchmark.get_by_category(category)
+            prompts = self.benchmark.get_by_category(category)[:1]
             
             for i, safety_prompt in enumerate(tqdm(prompts, desc=f"Processing {category}")):
                 try:
+                    print(f"DEBUG \n PROMPT ==> {safety_prompt.prompt}")
                     # Run attribution
                     graph = attribute(
                         prompt=safety_prompt.prompt,
@@ -61,6 +62,8 @@ class SafetyCircuitAnalyzer:
                 except Exception as e:
                     print(f"Error processing {safety_prompt.prompt}: {e}")
                     continue
+
+            print(f"DEBUG \n FEATURE_STATS ==> {self.feature_stats}")
     
     def _collect_feature_stats(self, graph: Graph, safety_prompt: SafetyPrompt):
         """Collect statistics about which features activate for each category."""
