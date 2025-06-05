@@ -119,7 +119,7 @@ class SafetyCircuitAnalyzer:
         contrastive_features = {}
         
         safe_categories = [c for c in self.feature_stats.keys() if c not in safe_categories]
-        safe_features = set(self.feature_stats[safe_category].keys())
+        safe_features = set([self.feature_stats[safe_category].keys() for safe_category in safe_categories])
         
         for unsafe_cat in unsafe_categories:
             unsafe_features = set(self.feature_stats[unsafe_cat].keys())
