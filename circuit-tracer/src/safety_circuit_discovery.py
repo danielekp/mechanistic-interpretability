@@ -136,7 +136,10 @@ class SafetyCircuitAnalyzer:
             differential_features = []
             print(f"shared_feature:{shared_features}")
             for feat in shared_features:
-                safe_acts = [a['activation'] for a in self.feature_stats[safe_category][feat]]
+                safe_acts = []
+                for safe_cat in safe_categories:
+                    if safe_cat in self.feature_stats and feat in self.feature_stats[safe_cat]:
+                        safe_acts.extend([a['activation'] for a in self.feature_stats[safe_cat][feat]])
                 unsafe_acts = [a['activation'] for a in self.feature_stats[unsafe_cat][feat]]
 
                 if safe_acts and unsafe_acts:
