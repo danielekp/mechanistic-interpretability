@@ -146,6 +146,7 @@ class SafetyCircuitAnalyzer:
                     
                     print(f"\n unsafe_mean -> {unsafe_mean}, safe_mean -> {safe_mean}")
                     if abs(unsafe_mean - safe_mean) > 0.2:  # Significant difference
+
                         differential_features.append({
                             'feature': feat,
                             'safe_activation': safe_mean,
@@ -159,5 +160,6 @@ class SafetyCircuitAnalyzer:
                                      key=lambda x: abs(x['difference']), 
                                      reverse=True)[:10]
             }
-        
+        print(differential_features)
+        print(contrastive_features)
         return contrastive_features
