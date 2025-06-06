@@ -124,7 +124,7 @@ class SafetyCircuitAnalyzer:
         for safe_category in safe_categories:
             if safe_category in self.feature_stats:
                 safe_features.update(self.feature_stats[safe_category].keys())
-        
+        print(f"unsafe:{unsafe_categories}, safe:{safe_categories}")
         for unsafe_cat in unsafe_categories:
             unsafe_features = set(self.feature_stats[unsafe_cat].keys())
             
@@ -138,13 +138,12 @@ class SafetyCircuitAnalyzer:
             for feat in shared_features:
                 safe_acts = [a['activation'] for a in self.feature_stats[safe_category][feat]]
                 unsafe_acts = [a['activation'] for a in self.feature_stats[unsafe_cat][feat]]
-                
+
                 if safe_acts and unsafe_acts:
                     # Statistical test (simplified - you might want t-test)
                     safe_mean = np.mean(safe_acts)
                     unsafe_mean = np.mean(unsafe_acts)
                     
-                    print(f"\n unsafe_mean -> {unsafe_mean}, safe_mean -> {safe_mean}")
                     if abs(unsafe_mean - safe_mean) > 0.2:  # Significant difference
 
                         differential_features.append({
@@ -160,6 +159,4 @@ class SafetyCircuitAnalyzer:
                                      key=lambda x: abs(x['difference']), 
                                      reverse=True)[:10]
             }
-        print(differential_features)
-        print(contrastive_features)
         return contrastive_features
