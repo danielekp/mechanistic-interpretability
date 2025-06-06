@@ -124,7 +124,6 @@ class SafetyCircuitAnalyzer:
         for safe_category in safe_categories:
             if safe_category in self.feature_stats:
                 safe_features.update(self.feature_stats[safe_category].keys())
-        print(f"unsafe:{unsafe_categories}, safe:{safe_categories}")
         for unsafe_cat in unsafe_categories:
             unsafe_features = set(self.feature_stats[unsafe_cat].keys())
             
@@ -133,8 +132,9 @@ class SafetyCircuitAnalyzer:
             
             # Features that activate differently
             shared_features = unsafe_features & safe_features
+
             differential_features = []
-            print(f"shared_feature:{shared_features}")
+            
             for feat in shared_features:
                 safe_acts = []
                 for safe_cat in safe_categories:

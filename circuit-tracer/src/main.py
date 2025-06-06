@@ -143,7 +143,7 @@ if __name__ == "__main__":
     parser.add_argument('--max-feature-nodes', type=int, default=4096,
                        help='Maximum feature nodes for attribution. Default 4096')
     parser.add_argument('--categories', type=str, nargs='+',
-                       default=['deception', 'harmful_content', 'manipulation', 'safe_contrast'],
+                       default=['deception', 'manipulation', 'power_seeking', 'deception_safe_contrast','manipulation_safe_contrast','power_seeking_safe_contrast'],
                        help='Safety categories to analyze.')
     parser.add_argument('--min-frequency', type=float, default=0.3,
                        help='Minimum frequency for category-specific features. Default 0')
