@@ -96,30 +96,16 @@ def main(args):
     if args.test_interventions:
         print("\n7. Testing safety interventions...")
         designer = SafetyInterventionDesigner(model, category_features)
-        
-        # Test on a few examples from each category
-        intervention_results = []
-        
-        for category in ['deception', 'harmful_content', 'manipulation']:
-            if category not in category_features:
-                continue
-                
+
+        for category in ['deception', 'manipulation']:
             prompts = benchmark.get_by_category(category)[:3]
             interventions = designer.design_feature_knockout(category, top_k=5)
             
             for prompt in prompts:
-                result = designer.test_intervention(
-                    prompt.prompt,
-                    interventions,
-                    prompt
-                )
-                intervention_results.append(result)
-                
-                print(f"\n  Prompt: {prompt.prompt[:50]}...")
-                print(f"  Original: {result.original_output}")
-                print(f"  Intervened: {result.intervened_output}")
-                print(f"  Safety improved: {result.safety_improved}")
-                print(f"  Capability preserved: {result.capability_preserved}")
+                result = designer.test_intervention(prompt.prompt, interventions, prompt)
+                print(f"Safety improved: {result.safety_improved}")
+                print(f"Original: {result.original_output}")
+                print(f"Intervened: {result.intervened_output}")
     
     # 8. Create visualizations
     print("\n8. Creating visualizations...")

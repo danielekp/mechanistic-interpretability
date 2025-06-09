@@ -201,134 +201,179 @@ class SafetyCircuitVisualizer:
         fig.update_layout(height=600, title_text="Circuit Structure Comparison")
         return fig
     
-def create_feature_importance_dashboard(self, output_path: Path):
-    """Create an interactive HTML dashboard with all visualizations."""
-    
-    # Get analysis results
-    category_features = self.analyzer.find_category_specific_features()
-    contrasting_features = self.analyzer.find_contrasting_features()
-    
-    # Create visualizations
-    heatmap = self.create_feature_heatmap(category_features)
-    
-    # Create contrast visualization
-    contrast_data = []
-    for category, contrasts in contrasting_features.items():
-        for feat in contrasts['differential'][:5]:
-            contrast_data.append({
-                'category': category,
-                'feature': feat['feature'],
-                'safe_activation': feat['safe_activation'],
-                'unsafe_activation': feat['unsafe_activation'],
-                'difference': feat['difference']
-            })
-    
-    contrast_df = pd.DataFrame(contrast_data)
-    
-    if not contrast_df.empty:
-        contrast_fig = px.scatter(
-            contrast_df,
-            x='safe_activation',
-            y='unsafe_activation',
-            color='category',
-            size=contrast_df['difference'].abs(),
-            hover_data=['feature', 'difference'],
-            title='Contrastive Feature Analysis: Safe vs Unsafe Activations'
-        )
-    else:
-        # Create empty plot if no data
-        contrast_fig = go.Figure()
-        contrast_fig.update_layout(title="No contrastive features found")
-    
-    # Save all figures
-    output_path.mkdir(exist_ok=True, parents=True)
-    
-    heatmap.write_html(output_path / "feature_heatmap.html")
-    contrast_fig.write_html(output_path / "contrast_analysis.html")
-    
-    # Create main dashboard HTML - ESCAPE THE CURLY BRACES IN CSS
-    dashboard_html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Safety Circuit Analysis Dashboard</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            h1 {{ color: #333; }}
-            .section {{ margin: 20px 0; padding: 20px; border: 1px solid #ddd; }}
-            iframe {{ width: 100%; height: 600px; border: none; }}
-            .stats {{ display: flex; justify-content: space-around; margin: 20px 0; }}
-            .stat-box {{ text-align: center; padding: 20px; background: #f0f0f0; }}
-            .stat-value {{ font-size: 36px; font-weight: bold; color: #2196F3; }}
-            .stat-label {{ color: #666; margin-top: 10px; }}
-        </style>
-    </head>
-    <body>
-        <h1>Safety Circuit Discovery Dashboard</h1>
+    def create_feature_importance_dashboard(self, output_path: Path):
+        """Create an interactive HTML dashboard with all visualizations."""
         
-        <div class="stats">
-            <div class="stat-box">
-                <div class="stat-value">{total_features}</div>
-                <div class="stat-label">Safety-Relevant Features</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-value">{total_prompts}</div>
-                <div class="stat-label">Analyzed Prompts</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-value">{categories}</div>
-                <div class="stat-label">Safety Categories</div>
-            </div>
-        </div>
-        
-        <div class="section">
-            <h2>Feature Activation Patterns</h2>
-            <iframe src="feature_heatmap.html"></iframe>
-        </div>
-        
-        <div class="section">
-            <h2>Contrastive Analysis</h2>
-            <iframe src="contrast_analysis.html"></iframe>
-        </div>
-        
-        <div class="section">
-            <h2>Key Findings</h2>
-            <ul>
-                {findings}
-            </ul>
-        </div>
-    </body>
-    </html>
-    """
-    
-    # Calculate statistics
-    total_features = sum(len(feats) for feats in category_features.values())
-    total_prompts = len(self.analyzer.graphs)
-    categories = len(category_features)
-    
-    # Generate findings
-    findings = []
-    for cat, features in category_features.items():
-        if features:
-            top_feat = features[0]
-            findings.append(
-                f"<li><strong>{cat}:</strong> Top feature {top_feat[0]} "
-                f"activates in {top_feat[1]['frequency']*100:.1f}% of prompts "
-                f"with avg activation {top_feat[1]['avg_activation']:.3f}</li>"
+        try:
+            # Get analysis results
+            category_features = self.analyzer.find_category_specific_features()
+            contrasting_features = self.analyzer.find_contrasting_features()
+            
+            # Create output directory
+            output_path.mkdir(exist_ok=True, parents=True)
+            
+            # Create feature heatmap
+            try:
+                heatmap = self.create_feature_heatmap(category_features)
+                heatmap.write_html(output_path / "feature_heatmap.html")
+                print("✓ Feature heatmap created")
+            except Exception as e:
+                print(f"Warning: Could not create feature heatmap: {e}")
+            
+            # Create contrast visualization
+            try:
+                contrast_data = []
+                for category, contrasts in contrasting_features.items():
+                    if 'differential' in contrasts:
+                        for feat in contrasts['differential'][:5]:
+                            contrast_data.append({
+                                'category': category,
+                                'feature': feat['feature'],
+                                'safe_activation': feat['safe_activation'],
+                                'unsafe_activation': feat['unsafe_activation'],
+                                'difference': feat['difference']
+                            })
+                
+                if contrast_data:
+                    import pandas as pd
+                    import plotly.express as px
+                    
+                    contrast_df = pd.DataFrame(contrast_data)
+                    contrast_fig = px.scatter(
+                        contrast_df,
+                        x='safe_activation',
+                        y='unsafe_activation',
+                        color='category',
+                        size=contrast_df['difference'].abs(),
+                        hover_data=['feature', 'difference'],
+                        title='Contrastive Feature Analysis: Safe vs Unsafe Activations'
+                    )
+                    contrast_fig.write_html(output_path / "contrast_analysis.html")
+                    print("✓ Contrast analysis created")
+                else:
+                    # Create empty plot
+                    import plotly.graph_objects as go
+                    empty_fig = go.Figure()
+                    empty_fig.update_layout(title="No contrastive features found")
+                    empty_fig.write_html(output_path / "contrast_analysis.html")
+                    
+            except Exception as e:
+                print(f"Warning: Could not create contrast analysis: {e}")
+            
+            # Calculate statistics
+            total_features = sum(len(feats) for feats in category_features.values())
+            total_prompts = len(self.analyzer.graphs)
+            categories = len(category_features)
+            
+            # Generate findings
+            findings = []
+            for cat, features in category_features.items():
+                if features:
+                    top_feat = features[0]
+                    findings.append(
+                        f"<li><strong>{cat}:</strong> Top feature {top_feat[0]} "
+                        f"activates in {top_feat[1]['frequency']*100:.1f}% of prompts "
+                        f"with avg activation {top_feat[1]['avg_activation']:.3f}</li>"
+                    )
+            
+            if not findings:
+                findings.append("<li>No category-specific features found with current thresholds.</li>")
+            
+            # Create main dashboard HTML (with properly escaped CSS)
+            dashboard_html = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Safety Circuit Analysis Dashboard</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                    h1 {{ color: #333; }}
+                    .section {{ margin: 20px 0; padding: 20px; border: 1px solid #ddd; }}
+                    iframe {{ width: 100%; height: 600px; border: none; }}
+                    .stats {{ display: flex; justify-content: space-around; margin: 20px 0; }}
+                    .stat-box {{ text-align: center; padding: 20px; background: #f0f0f0; }}
+                    .stat-value {{ font-size: 36px; font-weight: bold; color: #2196F3; }}
+                    .stat-label {{ color: #666; margin-top: 10px; }}
+                </style>
+            </head>
+            <body>
+                <h1>Safety Circuit Discovery Dashboard</h1>
+                
+                <div class="stats">
+                    <div class="stat-box">
+                        <div class="stat-value">{total_features}</div>
+                        <div class="stat-label">Safety-Relevant Features</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{total_prompts}</div>
+                        <div class="stat-label">Analyzed Prompts</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value">{categories}</div>
+                        <div class="stat-label">Safety Categories</div>
+                    </div>
+                </div>
+                
+                <div class="section">
+                    <h2>Feature Activation Patterns</h2>
+                    <iframe src="feature_heatmap.html"></iframe>
+                </div>
+                
+                <div class="section">
+                    <h2>Contrastive Analysis</h2>
+                    <iframe src="contrast_analysis.html"></iframe>
+                </div>
+                
+                <div class="section">
+                    <h2>Key Findings</h2>
+                    <ul>
+                        {findings}
+                    </ul>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # Fill template
+            html = dashboard_html.format(
+                total_features=total_features,
+                total_prompts=total_prompts,
+                categories=categories,
+                findings='\n'.join(findings)
             )
-    
-    if not findings:
-        findings.append("<li>No category-specific features found with current thresholds.</li>")
-    
-    # Fill template
-    html = dashboard_html.format(
-        total_features=total_features,
-        total_prompts=total_prompts,
-        categories=categories,
-        findings='\n'.join(findings)
-    )
-    
-    with open(output_path / "index.html", 'w') as f:
-        f.write(html)
-    
-    print(f"Dashboard created at {output_path / 'index.html'}")
+            
+            with open(output_path / "index.html", 'w') as f:
+                f.write(html)
+            
+            print(f"✓ Dashboard created at {output_path / 'index.html'}")
+            
+        except Exception as e:
+            print(f"Error creating dashboard: {e}")
+            # Create basic fallback
+            self._create_basic_fallback_dashboard(output_path)
+
+    def _create_basic_fallback_dashboard(self, output_path: Path):
+        """Create a basic dashboard when full dashboard creation fails."""
+        output_path.mkdir(exist_ok=True, parents=True)
+        
+        basic_html = """
+        <!DOCTYPE html>
+        <html>
+        <head><title>Safety Analysis - Basic Report</title></head>
+        <body>
+            <h1>Safety Circuit Analysis Report</h1>
+            <p>Full dashboard creation failed, but analysis completed successfully.</p>
+            <p>Check the following files for detailed results:</p>
+            <ul>
+                <li>category_features.json</li>
+                <li>contrasting_features.json</li>
+                <li>*_motifs.json</li>
+            </ul>
+        </body>
+        </html>
+        """
+        
+        with open(output_path / "index.html", 'w') as f:
+            f.write(basic_html)
+        
+        print(f"✓ Basic fallback dashboard created at {output_path / 'index.html'}")
