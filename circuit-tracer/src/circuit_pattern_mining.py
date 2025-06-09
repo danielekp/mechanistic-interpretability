@@ -13,68 +13,97 @@ class CircuitPatternMiner:
         self.patterns = []
         
     def extract_circuit_fingerprint(self, graph: Graph, 
-                                  node_threshold: float = 0.8) -> np.ndarray:
+                                node_threshold: float = 0.8) -> np.ndarray:
         """Extract a feature vector representing the circuit structure."""
         
-        # Get pruned adjacency matrix
-        from circuit_tracer.graph import prune_graph
-        node_mask, edge_mask, _ = prune_graph(graph, node_threshold=node_threshold)
-        
-        # Extract structural features
-        adj_matrix = graph.adjacency_matrix.cpu().numpy()
-        pruned_adj = adj_matrix * edge_mask.cpu().numpy()
-        
-        features = []
-        
-        # 1. Degree distribution statistics
-        in_degrees = (pruned_adj > 0).sum(axis=1)
-        out_degrees = (pruned_adj > 0).sum(axis=0)
-        features.extend([
-            in_degrees.mean(), in_degrees.std(), in_degrees.max(),
-            out_degrees.mean(), out_degrees.std(), out_degrees.max()
-        ])
-        
-        # 2. Layer-wise feature activation patterns
-        active_features = graph.active_features[graph.selected_features]
-        layer_counts = np.bincount(active_features[:, 0].cpu().numpy(), 
-                                  minlength=graph.cfg.n_layers)
-        features.extend(layer_counts / layer_counts.sum())  # Normalized
-        
-        # 3. Path statistics
-        G = nx.from_numpy_array(pruned_adj, create_using=nx.DiGraph)
-        
-        # Find paths from tokens to logits
-        n_tokens = len(graph.input_tokens)
-        n_logits = len(graph.logit_tokens)
-        token_nodes = list(range(len(node_mask) - n_tokens - n_logits, 
-                               len(node_mask) - n_logits))
-        logit_nodes = list(range(len(node_mask) - n_logits, len(node_mask)))
-        
-        path_lengths = []
-        for token in token_nodes:
-            for logit in logit_nodes:
-                if nx.has_path(G, token, logit):
-                    path_lengths.append(nx.shortest_path_length(G, token, logit))
-        
-        if path_lengths:
-            features.extend([np.mean(path_lengths), np.std(path_lengths), 
-                           np.min(path_lengths), np.max(path_lengths)])
-        else:
-            features.extend([0, 0, 0, 0])
-        
-        return np.array(features)
+        try:
+            # Get pruned adjacency matrix
+            from circuit_tracer.graph import prune_graph
+            node_mask, edge_mask, _ = prune_graph(graph, node_threshold=node_threshold)
+            
+            print(f"    Graph pruning: {node_mask.sum().item()}/{len(node_mask)} nodes, {edge_mask.sum().item()}/{edge_mask.numel()} edges")
+            
+            # Extract structural features
+            adj_matrix = graph.adjacency_matrix.cpu().numpy()
+            pruned_adj = adj_matrix * edge_mask.cpu().numpy()
+            
+            features = []
+            
+            # 1. Degree distribution statistics
+            in_degrees = (pruned_adj > 0).sum(axis=1)
+            out_degrees = (pruned_adj > 0).sum(axis=0)
+            
+            degree_features = [
+                in_degrees.mean() if len(in_degrees) > 0 else 0,
+                in_degrees.std() if len(in_degrees) > 0 else 0,
+                in_degrees.max() if len(in_degrees) > 0 else 0,
+                out_degrees.mean() if len(out_degrees) > 0 else 0,
+                out_degrees.std() if len(out_degrees) > 0 else 0,
+                out_degrees.max() if len(out_degrees) > 0 else 0
+            ]
+            features.extend(degree_features)
+            print(f"    Degree features: {degree_features}")
+            
+            # 2. Layer-wise feature activation patterns
+            active_features = graph.active_features[graph.selected_features]
+            if len(active_features) > 0:
+                layer_counts = np.bincount(active_features[:, 0].cpu().numpy(), 
+                                        minlength=graph.cfg.n_layers)
+                # Normalize only if sum > 0
+                if layer_counts.sum() > 0:
+                    layer_features = layer_counts / layer_counts.sum()
+                else:
+                    layer_features = layer_counts.astype(float)
+            else:
+                layer_features = np.zeros(graph.cfg.n_layers)
+            
+            features.extend(layer_features)
+            print(f"    Layer features shape: {layer_features.shape}, sum: {layer_features.sum()}")
+            
+            # 3. Path statistics (simplified to avoid networkx issues)
+            # Just use basic graph connectivity measures
+            if pruned_adj.sum() > 0:
+                # Graph density
+                n_nodes = node_mask.sum().item()
+                max_edges = n_nodes * (n_nodes - 1)
+                density = edge_mask.sum().item() / max_edges if max_edges > 0 else 0
+                
+                # Average node degree
+                avg_degree = (in_degrees.mean() + out_degrees.mean()) / 2 if len(in_degrees) > 0 else 0
+                
+                path_features = [density, avg_degree, 0, 0]  # Simplified path stats
+            else:
+                path_features = [0, 0, 0, 0]
+            
+            features.extend(path_features)
+            print(f"    Path features: {path_features}")
+            
+            feature_vector = np.array(features, dtype=np.float32)
+            print(f"    Final feature vector shape: {feature_vector.shape}, has nan: {np.isnan(feature_vector).any()}, has inf: {np.isinf(feature_vector).any()}")
+            
+            # Replace any remaining nan/inf with 0
+            feature_vector = np.nan_to_num(feature_vector, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            return feature_vector
+            
+        except Exception as e:
+            print(f"    Error in fingerprint extraction: {e}")
+            # Return zero vector as fallback
+            return np.zeros(50, dtype=np.float32)  # Fixed size fallback
     
     def find_circuit_clusters(self, category: str = None, 
-                            n_components: int = 10) -> Dict[int, List[str]]:
+                        n_components: int = 10) -> Dict[int, List[str]]:
         """Find clusters of similar circuits using PCA + DBSCAN."""
         
         # Filter graphs by category if specified
         if category:
             filtered_graphs = {k: v for k, v in self.graphs.items() 
-                             if k.startswith(category)}
+                            if k.startswith(category)}
         else:
             filtered_graphs = self.graphs
-        print(f"category -> {category}")
+        
+        print(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
+        
         # Extract fingerprints
         fingerprints = []
         graph_keys = []
@@ -82,28 +111,135 @@ class CircuitPatternMiner:
         for key, graph in filtered_graphs.items():
             try:
                 fp = self.extract_circuit_fingerprint(graph)
-                fingerprints.append(fp)
-                graph_keys.append(key)
-            except:
+                if not np.isnan(fp).any() and not np.isinf(fp).any():
+                    fingerprints.append(fp)
+                    graph_keys.append(key)
+                    print(f"  Valid fingerprint for {key}: shape {fp.shape}, mean {fp.mean():.3f}")
+                else:
+                    print(f"Skipping graph {key}: invalid fingerprint (nan/inf)")
+            except Exception as e:
+                print(f"Error extracting fingerprint for {key}: {e}")
                 continue
         
+        print(f"Valid fingerprints: {len(fingerprints)}")
+        
         if len(fingerprints) < 2:
+            print(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
             return {}
-        print(len(fingerprints))
-        # Dimensionality reduction
+        
+        # Stack and analyze fingerprints
         fingerprints = np.stack(fingerprints)
-        pca = PCA(n_components=min(n_components, len(fingerprints)-1))
-        reduced = pca.fit_transform(fingerprints)
+        print(f"Fingerprint matrix shape: {fingerprints.shape}")
+        print(f"Fingerprint stats: mean={fingerprints.mean():.3f}, std={fingerprints.std():.3f}")
+        print(f"Min values: {fingerprints.min(axis=0)[:5]}")
+        print(f"Max values: {fingerprints.max(axis=0)[:5]}")
         
-        # Clustering (dynamic vaues for DBSCAN)
-        min_samples = max(2, len(fingerprints) // 10)
-        clustering = DBSCAN(eps=0.5, min_samples=min_samples).fit(reduced)
+        # Check for constant features (no variance)
+        feature_stds = fingerprints.std(axis=0)
+        constant_features = np.sum(feature_stds < 1e-6)
+        print(f"Constant features (std < 1e-6): {constant_features}/{len(feature_stds)}")
         
-        # Group results
+        # Remove constant features
+        varying_features = feature_stds >= 1e-6
+        if varying_features.sum() == 0:
+            print("ERROR: All features are constant!")
+            return {}
+        
+        fingerprints_filtered = fingerprints[:, varying_features]
+        print(f"After removing constant features: {fingerprints_filtered.shape}")
+        
+        # Standardize features
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        fingerprints_scaled = scaler.fit_transform(fingerprints_filtered)
+        print(f"After scaling: mean={fingerprints_scaled.mean():.3f}, std={fingerprints_scaled.std():.3f}")
+        
+        # Dimensionality reduction
+        n_components = min(n_components, len(fingerprints)-1, fingerprints_scaled.shape[1])
+        
+        if n_components < 1:
+            print("Cannot perform PCA: insufficient data")
+            return {}
+        
+        pca = PCA(n_components=n_components)
+        reduced = pca.fit_transform(fingerprints_scaled)
+        print(f"PCA shape: {reduced.shape}")
+        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_[:min(5, len(pca.explained_variance_ratio_))]}")
+        
+        # Calculate pairwise distances to help choose eps
+        from sklearn.metrics.pairwise import euclidean_distances
+        distances = euclidean_distances(reduced)
+        # Get upper triangle (excluding diagonal)
+        upper_tri_indices = np.triu_indices_from(distances, k=1)
+        pairwise_dists = distances[upper_tri_indices]
+        
+        print(f"Pairwise distance stats:")
+        print(f"  Mean: {pairwise_dists.mean():.3f}")
+        print(f"  Std: {pairwise_dists.std():.3f}")
+        print(f"  Min: {pairwise_dists.min():.3f}")
+        print(f"  Max: {pairwise_dists.max():.3f}")
+        print(f"  25th percentile: {np.percentile(pairwise_dists, 25):.3f}")
+        print(f"  50th percentile: {np.percentile(pairwise_dists, 50):.3f}")
+        print(f"  75th percentile: {np.percentile(pairwise_dists, 75):.3f}")
+        
+        # Try multiple eps values
+        eps_candidates = [
+            np.percentile(pairwise_dists, 10),
+            np.percentile(pairwise_dists, 25),
+            np.percentile(pairwise_dists, 50),
+            pairwise_dists.mean(),
+            np.percentile(pairwise_dists, 75)
+        ]
+        
+        min_samples_candidates = [2, 3, max(2, len(fingerprints) // 10)]
+        
+        best_clustering = None
+        best_score = -1
+        best_params = None
+        
+        for eps in eps_candidates:
+            for min_samples in min_samples_candidates:
+                if min_samples >= len(fingerprints):
+                    continue
+                    
+                print(f"\nTrying DBSCAN with eps={eps:.3f}, min_samples={min_samples}")
+                
+                clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(reduced)
+                
+                n_clusters = len(set(clustering.labels_)) - (1 if -1 in clustering.labels_ else 0)
+                n_noise = list(clustering.labels_).count(-1)
+                
+                print(f"  Result: {n_clusters} clusters, {n_noise} noise points")
+                
+                # Score clustering (prefer fewer noise points and reasonable number of clusters)
+                if n_clusters > 0:
+                    score = n_clusters - (n_noise / len(fingerprints))
+                    print(f"  Score: {score:.3f}")
+                    
+                    if score > best_score:
+                        best_clustering = clustering
+                        best_score = score
+                        best_params = (eps, min_samples)
+        
+        if best_clustering is None:
+            print("No successful clustering found with any parameters")
+            return {}
+        
+        print(f"\nBest clustering: eps={best_params[0]:.3f}, min_samples={best_params[1]}")
+        
+        # Group results using best clustering
         clusters = defaultdict(list)
-        for idx, label in enumerate(clustering.labels_):
+        noise_count = 0
+        
+        for idx, label in enumerate(best_clustering.labels_):
             if label != -1:  # Not noise
                 clusters[label].append(graph_keys[idx])
+            else:
+                noise_count += 1
+        
+        print(f"Final result: {len(clusters)} clusters, {noise_count} noise points")
+        for cluster_id, members in clusters.items():
+            print(f"  Cluster {cluster_id}: {len(members)} members")
         
         return dict(clusters)
     

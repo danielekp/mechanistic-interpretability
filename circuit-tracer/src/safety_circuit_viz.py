@@ -201,30 +201,31 @@ class SafetyCircuitVisualizer:
         fig.update_layout(height=600, title_text="Circuit Structure Comparison")
         return fig
     
-    def create_feature_importance_dashboard(self, output_path: Path):
-        """Create an interactive HTML dashboard with all visualizations."""
-        
-        # Get analysis results
-        category_features = self.analyzer.find_category_specific_features()
-        contrasting_features = self.analyzer.find_contrasting_features()
-        
-        # Create visualizations
-        heatmap = self.create_feature_heatmap(category_features)
-        
-        # Create contrast visualization
-        contrast_data = []
-        for category, contrasts in contrasting_features.items():
-            for feat in contrasts['differential'][:5]:
-                contrast_data.append({
-                    'category': category,
-                    'feature': feat['feature'],
-                    'safe_activation': feat['safe_activation'],
-                    'unsafe_activation': feat['unsafe_activation'],
-                    'difference': feat['difference']
-                })
-        
-        contrast_df = pd.DataFrame(contrast_data)
-        
+def create_feature_importance_dashboard(self, output_path: Path):
+    """Create an interactive HTML dashboard with all visualizations."""
+    
+    # Get analysis results
+    category_features = self.analyzer.find_category_specific_features()
+    contrasting_features = self.analyzer.find_contrasting_features()
+    
+    # Create visualizations
+    heatmap = self.create_feature_heatmap(category_features)
+    
+    # Create contrast visualization
+    contrast_data = []
+    for category, contrasts in contrasting_features.items():
+        for feat in contrasts['differential'][:5]:
+            contrast_data.append({
+                'category': category,
+                'feature': feat['feature'],
+                'safe_activation': feat['safe_activation'],
+                'unsafe_activation': feat['unsafe_activation'],
+                'difference': feat['difference']
+            })
+    
+    contrast_df = pd.DataFrame(contrast_data)
+    
+    if not contrast_df.empty:
         contrast_fig = px.scatter(
             contrast_df,
             x='safe_activation',
@@ -234,93 +235,100 @@ class SafetyCircuitVisualizer:
             hover_data=['feature', 'difference'],
             title='Contrastive Feature Analysis: Safe vs Unsafe Activations'
         )
+    else:
+        # Create empty plot if no data
+        contrast_fig = go.Figure()
+        contrast_fig.update_layout(title="No contrastive features found")
+    
+    # Save all figures
+    output_path.mkdir(exist_ok=True, parents=True)
+    
+    heatmap.write_html(output_path / "feature_heatmap.html")
+    contrast_fig.write_html(output_path / "contrast_analysis.html")
+    
+    # Create main dashboard HTML - ESCAPE THE CURLY BRACES IN CSS
+    dashboard_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Safety Circuit Analysis Dashboard</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            h1 {{ color: #333; }}
+            .section {{ margin: 20px 0; padding: 20px; border: 1px solid #ddd; }}
+            iframe {{ width: 100%; height: 600px; border: none; }}
+            .stats {{ display: flex; justify-content: space-around; margin: 20px 0; }}
+            .stat-box {{ text-align: center; padding: 20px; background: #f0f0f0; }}
+            .stat-value {{ font-size: 36px; font-weight: bold; color: #2196F3; }}
+            .stat-label {{ color: #666; margin-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <h1>Safety Circuit Discovery Dashboard</h1>
         
-        # Save all figures
-        output_path.mkdir(exist_ok=True, parents=True)
-        
-        heatmap.write_html(output_path / "feature_heatmap.html")
-        contrast_fig.write_html(output_path / "contrast_analysis.html")
-        
-        # Create main dashboard HTML
-        dashboard_html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Safety Circuit Analysis Dashboard</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 20px; }
-                h1 { color: #333; }
-                .section { margin: 20px 0; padding: 20px; border: 1px solid #ddd; }
-                iframe { width: 100%; height: 600px; border: none; }
-                .stats { display: flex; justify-content: space-around; margin: 20px 0; }
-                .stat-box { text-align: center; padding: 20px; background: #f0f0f0; }
-                .stat-value { font-size: 36px; font-weight: bold; color: #2196F3; }
-                .stat-label { color: #666; margin-top: 10px; }
-            </style>
-        </head>
-        <body>
-            <h1>Safety Circuit Discovery Dashboard</h1>
-            
-            <div class="stats">
-                <div class="stat-box">
-                    <div class="stat-value">{total_features}</div>
-                    <div class="stat-label">Safety-Relevant Features</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value">{total_prompts}</div>
-                    <div class="stat-label">Analyzed Prompts</div>
-                </div>
-                <div class="stat-box">
-                    <div class="stat-value">{categories}</div>
-                    <div class="stat-label">Safety Categories</div>
-                </div>
+        <div class="stats">
+            <div class="stat-box">
+                <div class="stat-value">{total_features}</div>
+                <div class="stat-label">Safety-Relevant Features</div>
             </div>
-            
-            <div class="section">
-                <h2>Feature Activation Patterns</h2>
-                <iframe src="feature_heatmap.html"></iframe>
+            <div class="stat-box">
+                <div class="stat-value">{total_prompts}</div>
+                <div class="stat-label">Analyzed Prompts</div>
             </div>
-            
-            <div class="section">
-                <h2>Contrastive Analysis</h2>
-                <iframe src="contrast_analysis.html"></iframe>
+            <div class="stat-box">
+                <div class="stat-value">{categories}</div>
+                <div class="stat-label">Safety Categories</div>
             </div>
-            
-            <div class="section">
-                <h2>Key Findings</h2>
-                <ul>
-                    {findings}
-                </ul>
-            </div>
-        </body>
-        </html>
-        """
+        </div>
         
-        # Calculate statistics
-        total_features = sum(len(feats) for feats in category_features.values())
-        total_prompts = len(self.analyzer.graphs)
-        categories = len(category_features)
+        <div class="section">
+            <h2>Feature Activation Patterns</h2>
+            <iframe src="feature_heatmap.html"></iframe>
+        </div>
         
-        # Generate findings
-        findings = []
-        for cat, features in category_features.items():
-            if features:
-                top_feat = features[0]
-                findings.append(
-                    f"<li><strong>{cat}:</strong> Top feature {top_feat[0]} "
-                    f"activates in {top_feat[1]['frequency']*100:.1f}% of prompts "
-                    f"with avg activation {top_feat[1]['avg_activation']:.3f}</li>"
-                )
+        <div class="section">
+            <h2>Contrastive Analysis</h2>
+            <iframe src="contrast_analysis.html"></iframe>
+        </div>
         
-        # Fill template
-        html = dashboard_html.format(
-            total_features=total_features,
-            total_prompts=total_prompts,
-            categories=categories,
-            findings='\n'.join(findings)
-        )
-        
-        with open(output_path / "index.html", 'w') as f:
-            f.write(html)
-        
-        print(f"Dashboard created at {output_path / 'index.html'}")
+        <div class="section">
+            <h2>Key Findings</h2>
+            <ul>
+                {findings}
+            </ul>
+        </div>
+    </body>
+    </html>
+    """
+    
+    # Calculate statistics
+    total_features = sum(len(feats) for feats in category_features.values())
+    total_prompts = len(self.analyzer.graphs)
+    categories = len(category_features)
+    
+    # Generate findings
+    findings = []
+    for cat, features in category_features.items():
+        if features:
+            top_feat = features[0]
+            findings.append(
+                f"<li><strong>{cat}:</strong> Top feature {top_feat[0]} "
+                f"activates in {top_feat[1]['frequency']*100:.1f}% of prompts "
+                f"with avg activation {top_feat[1]['avg_activation']:.3f}</li>"
+            )
+    
+    if not findings:
+        findings.append("<li>No category-specific features found with current thresholds.</li>")
+    
+    # Fill template
+    html = dashboard_html.format(
+        total_features=total_features,
+        total_prompts=total_prompts,
+        categories=categories,
+        findings='\n'.join(findings)
+    )
+    
+    with open(output_path / "index.html", 'w') as f:
+        f.write(html)
+    
+    print(f"Dashboard created at {output_path / 'index.html'}")
