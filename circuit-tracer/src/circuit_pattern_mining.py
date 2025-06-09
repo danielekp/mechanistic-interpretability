@@ -301,11 +301,14 @@ class CircuitPatternMiner:
                 incoming_patterns[incoming.sum().item()] += 1
                 outgoing_patterns[outgoing.sum().item()] += 1
             
+            # Convert numpy types to Python native types for JSON serialization
             motifs.append({
-                'feature': (layer, pos, feature_id),
-                'support': feature_counts[feat] / total_graphs,
-                'avg_incoming': np.mean(list(incoming_patterns.keys())),
-                'avg_outgoing': np.mean(list(outgoing_patterns.keys()))
+                'feature': (int(layer), int(pos), int(feature_id)),  # Convert to Python int
+                'support': float(feature_counts[feat] / total_graphs),  # Convert to Python float
+                'avg_incoming': float(np.mean(list(incoming_patterns.keys()))) if incoming_patterns else 0.0,
+                'avg_outgoing': float(np.mean(list(outgoing_patterns.keys()))) if outgoing_patterns else 0.0,
+                'incoming_pattern_counts': {int(k): int(v) for k, v in incoming_patterns.items()},  # Convert keys and values
+                'outgoing_pattern_counts': {int(k): int(v) for k, v in outgoing_patterns.items()}   # Convert keys and values
             })
         
         return sorted(motifs, key=lambda x: x['support'], reverse=True)
