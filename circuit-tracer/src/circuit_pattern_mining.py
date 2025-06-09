@@ -74,7 +74,7 @@ class CircuitPatternMiner:
                              if k.startswith(category)}
         else:
             filtered_graphs = self.graphs
-        
+        print(f"category -> {category}")
         # Extract fingerprints
         fingerprints = []
         graph_keys = []
@@ -89,14 +89,15 @@ class CircuitPatternMiner:
         
         if len(fingerprints) < 2:
             return {}
-        
+        print(len(fingerprints))
         # Dimensionality reduction
         fingerprints = np.stack(fingerprints)
         pca = PCA(n_components=min(n_components, len(fingerprints)-1))
         reduced = pca.fit_transform(fingerprints)
         
-        # Clustering
-        clustering = DBSCAN(eps=0.5, min_samples=2).fit(reduced)
+        # Clustering (dynamic vaues for DBSCAN)
+        min_samples = max(2, len(fingerprints) // 10)
+        clustering = DBSCAN(eps=0.5, min_samples=min_samples).fit(reduced)
         
         # Group results
         clusters = defaultdict(list)
