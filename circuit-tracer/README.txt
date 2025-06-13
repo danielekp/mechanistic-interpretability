@@ -1,0 +1,1 @@
+python main.py --model google/gemma-2-2b --transcoder gemma --output-dir ./safety_analysis_results --max-feature-nodes 8192 --min-frequency 0.25 --min-activation 0.1 --mine-patterns --device cuda

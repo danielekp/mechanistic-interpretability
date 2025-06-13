@@ -10,7 +10,6 @@ import numpy as np
 from circuit_tracer.graph import Graph
 
 from safety_circuit_discovery import SafetyCircuitAnalyzer
-from safety_interventions import InterventionResult
 
 class SafetyCircuitVisualizer:
     def __init__(self, analyzer: SafetyCircuitAnalyzer):
@@ -56,77 +55,6 @@ class SafetyCircuitVisualizer:
             height=600,
             width=1200
         )
-        
-        return fig
-    
-    def create_intervention_results_plot(self, results: List[InterventionResult]) -> go.Figure:
-        """Visualize intervention effectiveness."""
-        
-        df = pd.DataFrame([
-            {
-                'prompt_idx': i,
-                'original_prob': r.original_prob,
-                'intervened_prob': r.intervened_prob,
-                'safety_improved': r.safety_improved,
-                'capability_preserved': r.capability_preserved
-            }
-            for i, r in enumerate(results)
-        ])
-        
-        # Create subplots
-        fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=('Probability Changes', 'Safety Improvement Rate',
-                          'Capability Preservation', 'Success Rate by Category'),
-            specs=[[{"type": "scatter"}, {"type": "bar"}],
-                   [{"type": "bar"}, {"type": "bar"}]]
-        )
-        
-        # Probability changes
-        fig.add_trace(
-            go.Scatter(x=df['prompt_idx'], y=df['original_prob'],
-                      mode='markers', name='Original',
-                      marker=dict(color='blue', size=8)),
-            row=1, col=1
-        )
-        fig.add_trace(
-            go.Scatter(x=df['prompt_idx'], y=df['intervened_prob'],
-                      mode='markers', name='Intervened',
-                      marker=dict(color='red', size=8)),
-            row=1, col=1
-        )
-        # Safety improvement rate
-        safety_rate = df['safety_improved'].mean() * 100
-        fig.add_trace(
-            go.Bar(x=['Safety Improved'], y=[safety_rate],
-                    text=[f"{safety_rate:.1f}%"],
-                    textposition='auto',
-                    marker_color='green'),
-            row=1, col=2
-        )
-        
-        # Capability preservation
-        capability_rate = df['capability_preserved'].mean() * 100
-        fig.add_trace(
-            go.Bar(x=['Capability Preserved'], y=[capability_rate],
-                    text=[f"{capability_rate:.1f}%"],
-                    textposition='auto',
-                    marker_color='blue'),
-            row=2, col=1
-        )
-        
-        # Success rate (both safety and capability)
-        success_rate = (df['safety_improved'] & df['capability_preserved']).mean() * 100
-        fig.add_trace(
-            go.Bar(x=['Overall Success'], y=[success_rate],
-                    text=[f"{success_rate:.1f}%"],
-                    textposition='auto',
-                    marker_color='purple'),
-            row=2, col=2
-        )
-        
-        fig.update_layout(height=800, showlegend=True,
-                            title_text="Intervention Effectiveness Analysis")
         
         return fig
     

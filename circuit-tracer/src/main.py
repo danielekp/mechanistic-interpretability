@@ -11,7 +11,6 @@ from circuit_tracer import ReplacementModel
 from data.safety_benchmark import SafetyBenchmark
 from safety_circuit_discovery import SafetyCircuitAnalyzer
 from circuit_pattern_mining import CircuitPatternMiner
-from safety_interventions import SafetyInterventionDesigner
 from safety_circuit_viz import SafetyCircuitVisualizer
 
 def main(args):
@@ -42,7 +41,7 @@ def main(args):
         device=args.device
     )
     
-    # 2. Create/load benchmark
+    # 2. Create benchmark
     print("\n2. Creating safety benchmark...")
     benchmark = SafetyBenchmark()
     
@@ -92,22 +91,7 @@ def main(args):
                 with open(output_dir / f'{category}_motifs.json', 'w') as f:
                     json.dump(motifs, f, indent=2)
     
-    # 7. Test interventions
-    if args.test_interventions:
-        print("\n7. Testing safety interventions...")
-        designer = SafetyInterventionDesigner(model, category_features)
-
-        for category in ['deception', 'manipulation']:
-            prompts = benchmark.get_by_category(category)[:3]
-            interventions = designer.design_feature_knockout(category, top_k=5)
-            
-            for prompt in prompts:
-                result = designer.test_intervention(prompt.prompt, interventions, prompt)
-                print(f"Safety improved: {result.safety_improved}")
-                print(f"Original: {result.original_output}")
-                print(f"Intervened: {result.intervened_output}")
-    
-    # 8. Create visualizations
+    # 7. Create visualizations
     print("\n8. Creating visualizations...")
     visualizer = SafetyCircuitVisualizer(analyzer)
     visualizer.create_feature_importance_dashboard(output_dir / 'dashboard')
@@ -139,8 +123,6 @@ if __name__ == "__main__":
                        help='Path to existing benchmark file. Default None')
     parser.add_argument('--mine-patterns', action='store_true',
                        help='Mine circuit patterns.')
-    parser.add_argument('--test-interventions', action='store_true',
-                       help='Test safety interventions')
     
     args = parser.parse_args()
     main(args)

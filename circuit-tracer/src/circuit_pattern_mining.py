@@ -1,55 +1,42 @@
 import torch
 import numpy as np
-from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
+from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
+from scipy.spatial.distance import pdist, cosine
 from typing import List, Dict, Set, Tuple
 import networkx as nx
 from circuit_tracer.graph import Graph
 from collections import defaultdict
 
 class CircuitPatternMiner:
-    def __init__(self, graphs: Dict[str, Graph]):
+    def __init__(self, graphs: Dict[str, Graph], debug: bool = False):
         self.graphs = graphs
         self.patterns = []
+        self.debug = debug
         
-    def extract_circuit_fingerprint(self, graph: Graph, 
-                                node_threshold: float = 0.8) -> np.ndarray:
-        """Extract a feature vector representing the circuit structure."""
+    def extract_circuit_fingerprint(self, graph: Graph, node_threshold: float = 0.8) -> np.ndarray:
+        """Extract a feature vector representing the circuit structure.
         
+        Returns only the layer-wise activation pattern, which captures
+        the functional organization of the circuit better than degree statistics.
+        """
         try:
             # Get pruned adjacency matrix
             from circuit_tracer.graph import prune_graph
             node_mask, edge_mask, _ = prune_graph(graph, node_threshold=node_threshold)
             
-            print(f"    Graph pruning: {node_mask.sum().item()}/{len(node_mask)} nodes, {edge_mask.sum().item()}/{edge_mask.numel()} edges")
+            if self.debug:
+                print(f"    Graph pruning: {node_mask.sum().item()}/{len(node_mask)} nodes, "
+                      f"{edge_mask.sum().item()}/{edge_mask.numel()} edges")
             
-            # Extract structural features
-            adj_matrix = graph.adjacency_matrix.cpu().numpy()
-            pruned_adj = adj_matrix * edge_mask.cpu().numpy()
-            
-            features = []
-            
-            # 1. Degree distribution statistics
-            in_degrees = (pruned_adj > 0).sum(axis=1)
-            out_degrees = (pruned_adj > 0).sum(axis=0)
-            
-            degree_features = [
-                in_degrees.mean() if len(in_degrees) > 0 else 0,
-                in_degrees.std() if len(in_degrees) > 0 else 0,
-                in_degrees.max() if len(in_degrees) > 0 else 0,
-                out_degrees.mean() if len(out_degrees) > 0 else 0,
-                out_degrees.std() if len(out_degrees) > 0 else 0,
-                out_degrees.max() if len(out_degrees) > 0 else 0
-            ]
-            features.extend(degree_features)
-            print(f"    Degree features: {degree_features}")
-            
-            # 2. Layer-wise feature activation patterns
+            # Extract layer-wise feature activation patterns
             active_features = graph.active_features[graph.selected_features]
+            
             if len(active_features) > 0:
+                # Count features per layer
                 layer_counts = np.bincount(active_features[:, 0].cpu().numpy(), 
-                                        minlength=graph.cfg.n_layers)
-                # Normalize only if sum > 0
+                                         minlength=graph.cfg.n_layers)
+                
+                # Normalize to get distribution
                 if layer_counts.sum() > 0:
                     layer_features = layer_counts / layer_counts.sum()
                 else:
@@ -57,48 +44,31 @@ class CircuitPatternMiner:
             else:
                 layer_features = np.zeros(graph.cfg.n_layers)
             
-            features.extend(layer_features)
-            print(f"    Layer features shape: {layer_features.shape}, sum: {layer_features.sum()}")
+            if self.debug:
+                print(f"    Layer features shape: {layer_features.shape}, "
+                      f"sum: {layer_features.sum():.3f}")
+                print(f"    Layer distribution: {layer_features}")
             
-            # 3. Path statistics (simplified to avoid networkx issues)
-            # Just use basic graph connectivity measures
-            if pruned_adj.sum() > 0:
-                # Graph density
-                n_nodes = node_mask.sum().item()
-                max_edges = n_nodes * (n_nodes - 1)
-                density = edge_mask.sum().item() / max_edges if max_edges > 0 else 0
-                
-                # Average node degree
-                avg_degree = (in_degrees.mean() + out_degrees.mean()) / 2 if len(in_degrees) > 0 else 0
-                
-                path_features = [density, avg_degree, 0, 0]  # Simplified path stats
-            else:
-                path_features = [0, 0, 0, 0]
-            
-            features.extend(path_features)
-            print(f"    Path features: {path_features}")
-            
-            feature_vector = np.array(features, dtype=np.float32)
-            print(f"    Final feature vector shape: {feature_vector.shape}, has nan: {np.isnan(feature_vector).any()}, has inf: {np.isinf(feature_vector).any()}")
-            
-            # Replace any remaining nan/inf with 0
-            feature_vector = np.nan_to_num(feature_vector, nan=0.0, posinf=0.0, neginf=0.0)
-            
-            return feature_vector
+            return layer_features.astype(np.float32)
             
         except Exception as e:
             print(f"    Error in fingerprint extraction: {e}")
-            # Return zero vector as fallback
-            return np.zeros(50, dtype=np.float32)  # Fixed size fallback
+            # Return zero vector with expected size
+            n_layers = getattr(graph.cfg, 'n_layers', 26)  # Default to 26 if not available
+            return np.zeros(n_layers, dtype=np.float32)
     
     def find_circuit_clusters(self, category: str = None, 
-                        n_components: int = 10) -> Dict[int, List[str]]:
+                        distance_threshold: float = 1) -> Dict[int, List[str]]:
         """Find clusters of similar circuits using PCA + DBSCAN."""
         
         # Filter graphs by category if specified
         if category:
-            filtered_graphs = {k: v for k, v in self.graphs.items() 
+            if "safe_contrast" in category:
+                filtered_graphs = {k: v for k, v in self.graphs.items() 
                             if k.startswith(category)}
+            else:
+                filtered_graphs = {k: v for k, v in self.graphs.items() 
+                            if k.startswith(category) and "safe_contrast" not in k}
         else:
             filtered_graphs = self.graphs
         
@@ -122,7 +92,7 @@ class CircuitPatternMiner:
                 continue
         
         print(f"Valid fingerprints: {len(fingerprints)}")
-        
+        print(f"\n{fingerprints}\n")
         if len(fingerprints) < 2:
             print(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
             return {}
@@ -153,95 +123,26 @@ class CircuitPatternMiner:
         scaler = StandardScaler()
         fingerprints_scaled = scaler.fit_transform(fingerprints_filtered)
         print(f"After scaling: mean={fingerprints_scaled.mean():.3f}, std={fingerprints_scaled.std():.3f}")
+
+        # Compute pairwise distances using cosine similarity
+        # (1 - cosine_similarity gives cosine distance)
+        distances = pdist(fingerprints_scaled, metric='cosine')
+
+        # Perform hierarchical clustering
+        linkage_matrix = linkage(distances, method='average')
         
-        # Dimensionality reduction
-        n_components = min(n_components, len(fingerprints)-1, fingerprints_scaled.shape[1])
+        clusters = fcluster(linkage_matrix, distance_threshold, criterion='distance')
+
+        # Group results
+        cluster_dict = defaultdict(list)
+        for idx, label in enumerate(clusters):
+            cluster_dict[label].append(graph_keys[idx])
         
-        if n_components < 1:
-            print("Cannot perform PCA: insufficient data")
-            return {}
-        
-        pca = PCA(n_components=n_components)
-        reduced = pca.fit_transform(fingerprints_scaled)
-        print(f"PCA shape: {reduced.shape}")
-        print(f"PCA explained variance ratio: {pca.explained_variance_ratio_[:min(5, len(pca.explained_variance_ratio_))]}")
-        
-        # Calculate pairwise distances to help choose eps
-        from sklearn.metrics.pairwise import euclidean_distances
-        distances = euclidean_distances(reduced)
-        # Get upper triangle (excluding diagonal)
-        upper_tri_indices = np.triu_indices_from(distances, k=1)
-        pairwise_dists = distances[upper_tri_indices]
-        
-        print(f"Pairwise distance stats:")
-        print(f"  Mean: {pairwise_dists.mean():.3f}")
-        print(f"  Std: {pairwise_dists.std():.3f}")
-        print(f"  Min: {pairwise_dists.min():.3f}")
-        print(f"  Max: {pairwise_dists.max():.3f}")
-        print(f"  25th percentile: {np.percentile(pairwise_dists, 25):.3f}")
-        print(f"  50th percentile: {np.percentile(pairwise_dists, 50):.3f}")
-        print(f"  75th percentile: {np.percentile(pairwise_dists, 75):.3f}")
-        
-        # Try multiple eps values
-        eps_candidates = [
-            np.percentile(pairwise_dists, 10),
-            np.percentile(pairwise_dists, 25),
-            np.percentile(pairwise_dists, 50),
-            pairwise_dists.mean(),
-            np.percentile(pairwise_dists, 75)
-        ]
-        
-        min_samples_candidates = [2, 3, max(2, len(fingerprints) // 10)]
-        
-        best_clustering = None
-        best_score = -1
-        best_params = None
-        
-        for eps in eps_candidates:
-            for min_samples in min_samples_candidates:
-                if min_samples >= len(fingerprints):
-                    continue
-                    
-                print(f"\nTrying DBSCAN with eps={eps:.3f}, min_samples={min_samples}")
-                
-                clustering = DBSCAN(eps=eps, min_samples=min_samples).fit(reduced)
-                
-                n_clusters = len(set(clustering.labels_)) - (1 if -1 in clustering.labels_ else 0)
-                n_noise = list(clustering.labels_).count(-1)
-                
-                print(f"  Result: {n_clusters} clusters, {n_noise} noise points")
-                
-                # Score clustering (prefer fewer noise points and reasonable number of clusters)
-                if n_clusters > 0:
-                    score = n_clusters - (n_noise / len(fingerprints))
-                    print(f"  Score: {score:.3f}")
-                    
-                    if score > best_score:
-                        best_clustering = clustering
-                        best_score = score
-                        best_params = (eps, min_samples)
-        
-        if best_clustering is None:
-            print("No successful clustering found with any parameters")
-            return {}
-        
-        print(f"\nBest clustering: eps={best_params[0]:.3f}, min_samples={best_params[1]}")
-        
-        # Group results using best clustering
-        clusters = defaultdict(list)
-        noise_count = 0
-        
-        for idx, label in enumerate(best_clustering.labels_):
-            if label != -1:  # Not noise
-                clusters[label].append(graph_keys[idx])
-            else:
-                noise_count += 1
-        
-        print(f"Final result: {len(clusters)} clusters, {noise_count} noise points")
-        for cluster_id, members in clusters.items():
+        print(f"Final result: {len(cluster_dict)} clusters")
+        for cluster_id, members in cluster_dict.items():
             print(f"  Cluster {cluster_id}: {len(members)} members")
         
-        return dict(clusters)
+        return dict(cluster_dict)
     
     def extract_common_motifs(self, cluster_graphs: List[Graph], 
                             min_support: float = 0.8) -> List[Dict]:
