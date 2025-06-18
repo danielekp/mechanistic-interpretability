@@ -23,8 +23,16 @@ class SafetyCircuitAnalyzer:
     def collect_attributions(self, 
                            output_dir: Path,
                            max_feature_nodes: int = 4096,
-                           categories: List[str] = None):
-        """Run attribution on all benchmark prompts and save graphs."""
+                           categories: List[str] = None,
+                           force_recompute: bool = False):
+        """Run attribution on all benchmark prompts and save graphs.
+        
+        Args:
+            output_dir: Directory to save/load graphs
+            max_feature_nodes: Maximum number of feature nodes to consider
+            categories: List of categories to process. If None, processes all categories
+            force_recompute: If True, recomputes attributions even if graphs exist
+        """
         
         categories = categories or list(set(p.category for p in self.benchmark.prompts))
         output_dir.mkdir(exist_ok=True, parents=True)
@@ -36,6 +44,19 @@ class SafetyCircuitAnalyzer:
             prompts = self.benchmark.get_by_category(category)
             
             for i, safety_prompt in enumerate(tqdm(prompts, desc=f"Processing {category}")):
+                graph_path = cat_dir / f"{category}_{i:03d}.pt"
+                
+                # Skip if graph exists and we're not forcing recomputation
+                if graph_path.exists() and not force_recompute:
+                    try:
+                        graph = Graph.from_pt(graph_path)
+                        self.graphs[f"{category}_{i}"] = graph
+                        self._collect_feature_stats(graph, safety_prompt)
+                        continue
+                    except Exception as e:
+                        print(f"Error loading existing graph {graph_path}: {e}")
+                        # If loading fails, we'll recompute below
+                
                 try:
                     # Run attribution
                     graph = attribute(
@@ -49,7 +70,6 @@ class SafetyCircuitAnalyzer:
                     )
                     
                     # Save graph
-                    graph_path = cat_dir / f"{category}_{i:03d}.pt"
                     graph.to_pt(graph_path)
                     
                     # Store in memory for analysis

@@ -2,64 +2,226 @@ import torch
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster, dendrogram
 from scipy.spatial.distance import pdist, cosine
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Optional
 import networkx as nx
-from circuit_tracer.graph import Graph
+from circuit_tracer.graph import Graph, prune_graph
 from collections import defaultdict
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 class CircuitPatternMiner:
     def __init__(self, graphs: Dict[str, Graph], debug: bool = False):
         self.graphs = graphs
         self.patterns = []
         self.debug = debug
+        self.pca = None
+        self.scaler = StandardScaler()
         
-    def extract_circuit_fingerprint(self, graph: Graph, node_threshold: float = 0.8) -> np.ndarray:
-        """Extract a feature vector representing the circuit structure.
+    def _compute_layer_feature_importance(self, graph: Graph) -> np.ndarray:
+        """Compute layer importance scores based on activation and connectivity.
         
-        Returns only the layer-wise activation pattern, which captures
-        the functional organization of the circuit better than degree statistics.
+        The function return a vector of importance scores normalized to [0,1] for each layer, with a final shape (n_layers,).
+        The steps are the following:
+        1. For each feature, compute the incoming and outgoing importance.
+        2. Compute the importance score for each feature, multiplying the activation value by the sum of the incoming and outgoing importance.
+            A feature with high incoming importance but low outgoing importance might be a "sink" that collects information
+            A feature with low incoming importance but high outgoing importance might be a "source" that distributes information
+            A feature with both high incoming and outgoing importance might be a crucial "hub" in the circuit
+            A feature with low values for both might be less important to the circuit's function
+        3. Sum the importance scores for all features in the layer to get the layer importance score.
+        4. Normalize the layer importance scores to [0,1].
         """
         try:
-            # Get pruned adjacency matrix
-            from circuit_tracer.graph import prune_graph
-            node_mask, edge_mask, _ = prune_graph(graph, node_threshold=node_threshold)
-            
-            if self.debug:
-                print(f"    Graph pruning: {node_mask.sum().item()}/{len(node_mask)} nodes, "
-                      f"{edge_mask.sum().item()}/{edge_mask.numel()} edges")
-            
-            # Extract layer-wise feature activation patterns
             active_features = graph.active_features[graph.selected_features]
+            activation_values = graph.activation_values
             
-            if len(active_features) > 0:
-                # Count features per layer
-                layer_counts = np.bincount(active_features[:, 0].cpu().numpy(), 
-                                         minlength=graph.cfg.n_layers)
+            n_layers = graph.cfg.n_layers
+            feature_importance = np.zeros(n_layers)
+            
+            for feat_idx, (layer, pos, feature_id) in enumerate(active_features):
+                activation = activation_values[feat_idx].item()
+                adj = graph.adjacency_matrix
+                incoming_importance = adj[feat_idx].sum().item()
+                outgoing_importance = adj[:, feat_idx].sum().item()
                 
-                # Normalize to get distribution
-                if layer_counts.sum() > 0:
-                    layer_features = layer_counts / layer_counts.sum()
-                else:
-                    layer_features = layer_counts.astype(float)
-            else:
-                layer_features = np.zeros(graph.cfg.n_layers)
+                # TODO: Add a weight for incoming and outgoing importance
+                importance = activation * (incoming_importance + outgoing_importance)
+                feature_importance[layer] += importance
             
-            if self.debug:
-                print(f"    Layer features shape: {layer_features.shape}, "
-                      f"sum: {layer_features.sum():.3f}")
-                print(f"    Layer distribution: {layer_features}")
-            
-            return layer_features.astype(np.float32)
+            # Normalize to [0,1]
+            if feature_importance.max() > 0:
+                feature_importance = feature_importance / feature_importance.max()
+                
+            return feature_importance
             
         except Exception as e:
-            print(f"    Error in fingerprint extraction: {e}")
+            logger.error(f"Error computing feature importance: {e}")
+            return np.zeros(graph.cfg.n_layers)
+    
+    def _analyze_information_flow(self, graph: Graph) -> np.ndarray:
+        """Analyze information flow patterns through the circuit.
+        
+        The steps are the following:
+        1. Find the active features in the graph of each layer and the next layer using the adjacency matrix.
+        2. Compute the flow strength as the mean of the connection weights between the active features of the current layer and the next layer.
+        3. Compute the diversity of the flow as the standard deviation of the connection weights between the active features of the current layer and the next layer.
+        4. Combine the flow and the diversity to get the flow pattern for the current layer.
+        5. Normalize the flow pattern to [0,1].
+        """
+        try:
+            active_features = graph.active_features[graph.selected_features]
+            n_layers = graph.cfg.n_layers
+            actual_size = len(active_features)
+            flow_patterns = np.zeros(n_layers)
+            
+            for layer in range(n_layers - 1):
+                # Create layer masks using actual tensor size
+                layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=active_features.device)
+                next_layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=active_features.device)
+                
+                layer_mask[active_features[:, 0] == layer] = True
+                next_layer_mask[active_features[:, 0] == layer + 1] = True
+                
+                if layer_mask.any() and next_layer_mask.any():
+                    layer_indices = torch.where(layer_mask)[0]
+                    next_layer_indices = torch.where(next_layer_mask)[0]
+                    
+                    adj = graph.adjacency_matrix
+                    layer_conn = adj[layer_indices][:, next_layer_indices]
+                    
+                    flow_strength = layer_conn.mean().item()
+                    flow_diversity = layer_conn.std().item()
+                    
+                    flow_patterns[layer] = flow_strength * (1 + flow_diversity)
+            
+            # Normalize to [0,1]
+            if flow_patterns.max() > 0:
+                flow_patterns = flow_patterns / flow_patterns.max()
+            
+            return flow_patterns
+            
+        except Exception as e:
+            logger.error(f"Error analyzing information flow: {e}")
+            return np.zeros(n_layers)
+    
+    def _compute_robustness_metrics(self, graph: Graph) -> np.ndarray:
+        """Compute metrics related to circuit robustness and redundancy.
+        
+        The steps are the following:
+        1. Compute the average clustering coefficient. It shows how resilient the circuit is to local failures.
+            If neighbors are well-connected, information can find alternative paths.
+        2. Compute the network density. Important for understanding the circuit's capacity for information flow.
+        3. Compute the average node connectivity. It is a global measure of the circuit's resilience to failures.
+        4. Compute the redundancy as the number of alternative paths between all pairs of nodes.
+        5. Normalize the robustness metrics to [0,1].
+        """
+        try:
+            G = nx.from_numpy_array(graph.adjacency_matrix.cpu().numpy())
+            
+            # Calculate robustness metrics
+            metrics = []
+            
+            # 1. Average clustering coefficient
+            metrics.append(nx.average_clustering(G))
+            
+            # 2. Network density
+            metrics.append(nx.density(G))
+            
+            # 3. Average node connectivity
+            if nx.is_connected(G):
+                metrics.append(nx.average_node_connectivity(G))
+            else:
+                metrics.append(0)
+            
+            # 4. Redundancy (number of alternative paths)
+            metrics.append(self._compute_redundancy(G))
+            
+            return np.array(metrics)
+            
+        except Exception as e:
+            logger.error(f"Error computing robustness metrics: {e}")
+            return np.zeros(4)
+        
+    def _compute_redundancy(self, G: nx.Graph) -> float:
+        """Compute redundancy more efficiently by using edge connectivity.
+        
+        Args:
+            G: NetworkX graph representing the circuit
+            
+        Returns:
+            float: Redundancy score between 0 and 1
+        """
+        try:
+            if G.number_of_edges() == 0:
+                return 0.0
+                
+            # Get all edges
+            edges = list(G.edges())
+            redundancy_count = 0
+            
+            # For each edge, check if there's an alternative path
+            for u, v in edges:
+                # Remove the edge temporarily
+                G.remove_edge(u, v)
+                
+                # Check if there's still a path between u and v
+                # Using BFS which is faster than finding all paths
+                try:
+                    # Try to find a path of length > 1
+                    path = nx.shortest_path(G, u, v)
+                    if len(path) > 2:  # Path length > 1 means there's an alternative route
+                        redundancy_count += 1
+                except nx.NetworkXNoPath:
+                    pass
+                    
+                # Add the edge back
+                G.add_edge(u, v)
+            
+            return redundancy_count / len(edges)
+            
+        except Exception as e:
+            logger.error(f"Error computing redundancy: {e}")
+            return 0.0
+    
+    def extract_circuit_fingerprint(self, graph: Graph, node_threshold: float = 0.8) -> np.ndarray:
+        """Extract a comprehensive feature vector representing the circuit structure."""
+        try:
+            # Get pruned adjacency matrix with dynamic sizing
+            node_mask, edge_mask, _ = prune_graph(graph, node_threshold=node_threshold)
+            actual_size = node_mask.sum().item()
+            
+            if self.debug:
+                logger.info(f"Graph pruning: {actual_size}/{len(node_mask)} nodes, "
+                          f"{edge_mask.sum().item()}/{edge_mask.numel()} edges")
+            
+            # Extract different aspects of the circuit
+            feature_importance = self._compute_layer_feature_importance(graph)
+            flow_patterns = self._analyze_information_flow(graph)
+            robustness_metrics = self._compute_robustness_metrics(graph)
+            
+            # Combine all features
+            fingerprint = np.concatenate([
+                feature_importance,      # Layer-wise feature importance
+                flow_patterns,           # Information flow patterns
+                robustness_metrics       # Circuit robustness metrics
+            ])
+            
+            return fingerprint.astype(np.float32)
+            
+        except Exception as e:
+            logger.error(f"Error in fingerprint extraction: {e}")
             # Return zero vector with expected size
-            n_layers = getattr(graph.cfg, 'n_layers', 26)  # Default to 26 if not available
-            return np.zeros(n_layers, dtype=np.float32)
+            n_layers = getattr(graph.cfg, 'n_layers', 26)
+            return np.zeros(n_layers * 4 + 4, dtype=np.float32)  # Adjusted size for new features
     
     def find_circuit_clusters(self, category: str = None, 
-                        distance_threshold: float = 1) -> Dict[int, List[str]]:
-        """Find clusters of similar circuits using PCA + DBSCAN."""
+                            distance_threshold: float = 1,
+                            n_components: int = 10) -> Dict[int, List[str]]:
+        """Find clusters of similar circuits using improved fingerprinting and dimensionality reduction."""
         
         # Filter graphs by category if specified
         if category:
@@ -72,7 +234,7 @@ class CircuitPatternMiner:
         else:
             filtered_graphs = self.graphs
         
-        print(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
+        logger.info(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
         
         # Extract fingerprints
         fingerprints = []
@@ -84,63 +246,48 @@ class CircuitPatternMiner:
                 if not np.isnan(fp).any() and not np.isinf(fp).any():
                     fingerprints.append(fp)
                     graph_keys.append(key)
-                    print(f"  Valid fingerprint for {key}: shape {fp.shape}, mean {fp.mean():.3f}")
+                    logger.info(f"Valid fingerprint for {key}: shape {fp.shape}, mean {fp.mean():.3f}")
                 else:
-                    print(f"Skipping graph {key}: invalid fingerprint (nan/inf)")
+                    logger.warning(f"Skipping graph {key}: invalid fingerprint (nan/inf)")
             except Exception as e:
-                print(f"Error extracting fingerprint for {key}: {e}")
+                logger.error(f"Error extracting fingerprint for {key}: {e}")
                 continue
         
-        print(f"Valid fingerprints: {len(fingerprints)}")
-        print(f"\n{fingerprints}\n")
         if len(fingerprints) < 2:
-            print(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
+            logger.warning(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
             return {}
         
-        # Stack and analyze fingerprints
+        # Stack and preprocess fingerprints
         fingerprints = np.stack(fingerprints)
-        print(f"Fingerprint matrix shape: {fingerprints.shape}")
-        print(f"Fingerprint stats: mean={fingerprints.mean():.3f}, std={fingerprints.std():.3f}")
-        print(f"Min values: {fingerprints.min(axis=0)[:5]}")
-        print(f"Max values: {fingerprints.max(axis=0)[:5]}")
-        
-        # Check for constant features (no variance)
-        feature_stds = fingerprints.std(axis=0)
-        constant_features = np.sum(feature_stds < 1e-6)
-        print(f"Constant features (std < 1e-6): {constant_features}/{len(feature_stds)}")
         
         # Remove constant features
+        feature_stds = fingerprints.std(axis=0)
         varying_features = feature_stds >= 1e-6
-        if varying_features.sum() == 0:
-            print("ERROR: All features are constant!")
-            return {}
-        
         fingerprints_filtered = fingerprints[:, varying_features]
-        print(f"After removing constant features: {fingerprints_filtered.shape}")
         
         # Standardize features
-        from sklearn.preprocessing import StandardScaler
-        scaler = StandardScaler()
-        fingerprints_scaled = scaler.fit_transform(fingerprints_filtered)
-        print(f"After scaling: mean={fingerprints_scaled.mean():.3f}, std={fingerprints_scaled.std():.3f}")
-
+        fingerprints_scaled = self.scaler.fit_transform(fingerprints_filtered)
+        
+        # Apply PCA for dimensionality reduction
+        if self.pca is None:
+            self.pca = PCA(n_components=min(n_components, len(fingerprints_scaled[0])))
+        fingerprints_reduced = self.pca.fit_transform(fingerprints_scaled)
+        
         # Compute pairwise distances using cosine similarity
-        # (1 - cosine_similarity gives cosine distance)
-        distances = pdist(fingerprints_scaled, metric='cosine')
-
+        distances = pdist(fingerprints_reduced, metric='cosine')
+        
         # Perform hierarchical clustering
         linkage_matrix = linkage(distances, method='average')
-        
         clusters = fcluster(linkage_matrix, distance_threshold, criterion='distance')
-
+        
         # Group results
         cluster_dict = defaultdict(list)
         for idx, label in enumerate(clusters):
             cluster_dict[label].append(graph_keys[idx])
         
-        print(f"Final result: {len(cluster_dict)} clusters")
+        logger.info(f"Final result: {len(cluster_dict)} clusters")
         for cluster_id, members in cluster_dict.items():
-            print(f"  Cluster {cluster_id}: {len(members)} members")
+            logger.info(f"Cluster {cluster_id}: {len(members)} members")
         
         return dict(cluster_dict)
     
