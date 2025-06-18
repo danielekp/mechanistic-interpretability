@@ -8,23 +8,9 @@ from circuit_tracer.graph import Graph, prune_graph
 from collections import defaultdict
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
-import logging
 import time
 import functools
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-def timing_decorator(func):
-    """Decorator to time function execution."""
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        logger.info(f"{func.__name__} took {end_time - start_time:.2f} seconds")
-        return result
-    return wrapper
+from tqdm import tqdm
 
 class CircuitPatternMiner:
     def __init__(self, graphs: Dict[str, Graph], debug: bool = False):
@@ -72,7 +58,7 @@ class CircuitPatternMiner:
             return feature_importance
             
         except Exception as e:
-            logger.error(f"Error computing feature importance: {e}")
+            print(f"Error computing feature importance: {e}")
             return np.zeros(graph.cfg.n_layers)
     
     def _analyze_information_flow(self, graph: Graph) -> np.ndarray:
@@ -122,7 +108,7 @@ class CircuitPatternMiner:
             return flow_patterns
             
         except Exception as e:
-            logger.error(f"Error analyzing information flow: {e}")
+            print(f"Error analyzing information flow: {e}")
             return np.zeros(n_layers)
     
     def _compute_robustness_metrics(self, graph: Graph) -> np.ndarray:
@@ -160,7 +146,7 @@ class CircuitPatternMiner:
             return np.array(metrics)
             
         except Exception as e:
-            logger.error(f"Error computing robustness metrics: {e}")
+            print(f"Error computing robustness metrics: {e}")
             return np.zeros(4)
         
     def _compute_redundancy(self, G: nx.Graph) -> float:
@@ -201,7 +187,7 @@ class CircuitPatternMiner:
             return redundancy_count / len(edges)
             
         except Exception as e:
-            logger.error(f"Error computing redundancy: {e}")
+            print(f"Error computing redundancy: {e}")
             return 0.0
     
     def extract_circuit_fingerprint(self, graph: Graph, node_threshold: float = 0.8) -> np.ndarray:
@@ -212,7 +198,7 @@ class CircuitPatternMiner:
             actual_size = node_mask.sum().item()
             
             if self.debug:
-                logger.info(f"Graph pruning: {actual_size}/{len(node_mask)} nodes, "
+                print(f"Graph pruning: {actual_size}/{len(node_mask)} nodes, "
                           f"{edge_mask.sum().item()}/{edge_mask.numel()} edges")
             
             # Extract different aspects of the circuit
@@ -230,7 +216,7 @@ class CircuitPatternMiner:
             return fingerprint.astype(np.float32)
             
         except Exception as e:
-            logger.error(f"Error in fingerprint extraction: {e}")
+            print(f"Error in fingerprint extraction: {e}")
             # Return zero vector with expected size
             n_layers = getattr(graph.cfg, 'n_layers', 26)
             return np.zeros(n_layers * 4 + 4, dtype=np.float32)  # Adjusted size for new features
@@ -251,32 +237,35 @@ class CircuitPatternMiner:
         else:
             filtered_graphs = self.graphs
         
-        logger.info(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
+        print(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
         
         # Extract fingerprints with progress logging
         fingerprints = []
         graph_keys = []
         
-        logger.info("Extracting fingerprints...")
-        for i, (key, graph) in enumerate(filtered_graphs.items()):
-            logger.info(f"Processing graph {i+1}/{len(filtered_graphs)}: {key}") 
+        print("Extracting fingerprints...")
+        for key, graph in tqdm(filtered_graphs.items(), desc=f"Processing {category or 'all'} graphs"):
             try:
                 fp = self.extract_circuit_fingerprint(graph)
                 if not np.isnan(fp).any() and not np.isinf(fp).any():
                     fingerprints.append(fp)
                     graph_keys.append(key)
-                    logger.info(f"Valid fingerprint for {key}: shape {fp.shape}, mean {fp.mean():.3f}")
+                    if self.debug:
+                        print(f"Valid fingerprint for {key}: shape {fp.shape}, mean {fp.mean():.3f}")
                 else:
-                    logger.warning(f"Skipping graph {key}: invalid fingerprint (nan/inf)")
+                    print(f"Skipping graph {key}: invalid fingerprint (nan/inf)")
             except Exception as e:
-                logger.error(f"Error extracting fingerprint for {key}: {e}")
+                print(f"Error extracting fingerprint for {key}: {e}")
                 continue
         
         if len(fingerprints) < 2:
-            logger.warning(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
+            print(f"Not enough valid fingerprints for clustering ({len(fingerprints)})")
             return {}
         
+        print(f"Successfully extracted {len(fingerprints)} fingerprints")
+        
         # Stack and preprocess fingerprints
+        print("Preprocessing fingerprints...")
         fingerprints = np.stack(fingerprints)
         
         # Remove constant features
@@ -284,21 +273,25 @@ class CircuitPatternMiner:
         varying_features = feature_stds >= 1e-6
         fingerprints_filtered = fingerprints[:, varying_features]
         
-        logger.info(f"Filtered to {fingerprints_filtered.shape[1]} varying features")
+        print(f"Filtered to {fingerprints_filtered.shape[1]} varying features")
         
         # Standardize features
         fingerprints_scaled = self.scaler.fit_transform(fingerprints_filtered)
         
         # Apply PCA for dimensionality reduction
+        print("Applying PCA dimensionality reduction...")
         if self.pca is None:
             self.pca = PCA(n_components=min(n_components, len(fingerprints_scaled[0])))
         fingerprints_reduced = self.pca.fit_transform(fingerprints_scaled)
         
+        print(f"Reduced to {fingerprints_reduced.shape[1]} PCA components")
+        
         # Compute pairwise distances using cosine similarity
+        print("Computing pairwise distances...")
         distances = pdist(fingerprints_reduced, metric='cosine')
         
         # Perform hierarchical clustering
-        logger.info("Performing hierarchical clustering...")
+        print("Performing hierarchical clustering...")
         linkage_matrix = linkage(distances, method='average')
         clusters = fcluster(linkage_matrix, distance_threshold, criterion='distance')
         
@@ -307,9 +300,10 @@ class CircuitPatternMiner:
         for idx, label in enumerate(clusters):
             cluster_dict[label].append(graph_keys[idx])
         
-        logger.info(f"Final result: {len(cluster_dict)} clusters")
+        print(f"\nClustering Results for '{category or 'all'}':")
+        print(f"Total clusters: {len(cluster_dict)}")
         for cluster_id, members in cluster_dict.items():
-            logger.info(f"Cluster {cluster_id}: {len(members)} members")
+            print(f"  Cluster {cluster_id}: {len(members)} members")
         
         return dict(cluster_dict)
     
@@ -323,7 +317,8 @@ class CircuitPatternMiner:
         feature_counts = defaultdict(int)
         total_graphs = len(cluster_graphs)
         
-        for graph in cluster_graphs:
+        print(f"Extracting motifs from {total_graphs} graphs...")
+        for graph in tqdm(cluster_graphs, desc="Processing graphs for motifs"):
             active_features = graph.active_features[graph.selected_features]
             unique_features = set(map(tuple, active_features.cpu().numpy()))
             
@@ -340,14 +335,15 @@ class CircuitPatternMiner:
             return motifs
         
         # For each common feature, find common connection patterns
-        for feat in common_features:
+        print(f"Analyzing {len(common_features)} common features...")
+        for feat in tqdm(common_features, desc="Analyzing common features"):
             layer, pos, feature_id = feat
             
             # Track incoming and outgoing connections
             incoming_patterns = defaultdict(int)
             outgoing_patterns = defaultdict(int)
             
-            for graph in cluster_graphs:
+            for graph in tqdm(cluster_graphs, desc=f"Processing graphs for feature {feat}", leave=False):
                 # Find this feature in the graph
                 active_features = graph.active_features[graph.selected_features]
                 feat_mask = (
@@ -382,3 +378,38 @@ class CircuitPatternMiner:
             })
         
         return sorted(motifs, key=lambda x: x['support'], reverse=True)
+    
+    def run_clustering_for_categories(self, categories: List[str], 
+                                    distance_threshold: float = 1,
+                                    n_components: int = 10) -> Dict[str, Dict[int, List[str]]]:
+        """Run clustering for multiple categories with progress bars."""
+        
+        results = {}
+        
+        print(f"Running clustering for {len(categories)} categories...")
+        for category in tqdm(categories, desc="Processing categories"):
+            print(f"\n{'='*50}")
+            print(f"Processing category: {category}")
+            print(f"{'='*50}")
+            
+            try:
+                clusters = self.find_circuit_clusters(
+                    category=category,
+                    distance_threshold=distance_threshold,
+                    n_components=n_components
+                )
+                results[category] = clusters
+                print(f"✓ Completed clustering for {category}")
+            except Exception as e:
+                print(f"✗ Error clustering {category}: {e}")
+                results[category] = {}
+        
+        print(f"\n{'='*50}")
+        print("CLUSTERING SUMMARY")
+        print(f"{'='*50}")
+        for category, clusters in results.items():
+            total_clusters = len(clusters)
+            total_graphs = sum(len(members) for members in clusters.values())
+            print(f"{category}: {total_clusters} clusters, {total_graphs} total graphs")
+        
+        return results
