@@ -9,9 +9,22 @@ from collections import defaultdict
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import logging
+import time
+import functools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def timing_decorator(func):
+    """Decorator to time function execution."""
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        start_time = time.time()
+        result = func(*args, **kwargs)
+        end_time = time.time()
+        logger.info(f"{func.__name__} took {end_time - start_time:.2f} seconds")
+        return result
+    return wrapper
 
 class CircuitPatternMiner:
     def __init__(self, graphs: Dict[str, Graph], debug: bool = False):
@@ -240,11 +253,13 @@ class CircuitPatternMiner:
         
         logger.info(f"Clustering category '{category}': {len(filtered_graphs)} graphs")
         
-        # Extract fingerprints
+        # Extract fingerprints with progress logging
         fingerprints = []
         graph_keys = []
         
-        for key, graph in filtered_graphs.items():
+        logger.info("Extracting fingerprints...")
+        for i, (key, graph) in enumerate(filtered_graphs.items()):
+            logger.info(f"Processing graph {i+1}/{len(filtered_graphs)}: {key}") 
             try:
                 fp = self.extract_circuit_fingerprint(graph)
                 if not np.isnan(fp).any() and not np.isinf(fp).any():
@@ -269,6 +284,8 @@ class CircuitPatternMiner:
         varying_features = feature_stds >= 1e-6
         fingerprints_filtered = fingerprints[:, varying_features]
         
+        logger.info(f"Filtered to {fingerprints_filtered.shape[1]} varying features")
+        
         # Standardize features
         fingerprints_scaled = self.scaler.fit_transform(fingerprints_filtered)
         
@@ -281,6 +298,7 @@ class CircuitPatternMiner:
         distances = pdist(fingerprints_reduced, metric='cosine')
         
         # Perform hierarchical clustering
+        logger.info("Performing hierarchical clustering...")
         linkage_matrix = linkage(distances, method='average')
         clusters = fcluster(linkage_matrix, distance_threshold, criterion='distance')
         
