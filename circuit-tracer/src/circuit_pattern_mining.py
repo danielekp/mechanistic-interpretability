@@ -78,17 +78,21 @@ class CircuitPatternMiner:
             actual_size = len(active_features)
             flow_patterns = np.zeros(n_layers)
             
+            # Get the device of the adjacency matrix
+            adj = graph.adjacency_matrix
+            device = adj.device
+            
             for layer in range(n_layers - 1):
-                # Create layer masks using actual tensor size
-                layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=active_features.device)
-                next_layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=active_features.device)
+                # Create layer masks using actual tensor size and correct device
+                layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=device)
+                next_layer_mask = torch.zeros(actual_size, dtype=torch.bool, device=device)
                 
                 layer_mask[active_features[:, 0] == layer] = True
                 next_layer_mask[active_features[:, 0] == layer + 1] = True
                 
                 if layer_mask.any() and next_layer_mask.any():
-                    layer_indices = torch.where(layer_mask)[0]
-                    next_layer_indices = torch.where(next_layer_mask)[0]
+                    layer_indices = torch.where(layer_mask)[0].to(device)
+                    next_layer_indices = torch.where(next_layer_mask)[0].to(device)
                     
                     adj = graph.adjacency_matrix
                     layer_conn = adj[layer_indices][:, next_layer_indices]
