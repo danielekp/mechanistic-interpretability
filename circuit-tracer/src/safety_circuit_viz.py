@@ -1,41 +1,70 @@
 from pathlib import Path
 import json
 from typing import Dict, List
+import re
 
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots
 import pandas as pd
 import numpy as np
-from circuit_tracer.graph import Graph
+import torch
+import re
 
 from safety_circuit_discovery import SafetyCircuitAnalyzer
 
 class SafetyCircuitVisualizer:
     def __init__(self, analyzer: SafetyCircuitAnalyzer):
         self.analyzer = analyzer
+        self.model = analyzer.model
         
+    def _get_top_transcoder_tokens(self, feature_key: str, k: int = 5):
+        """Get the top-k semantic tokens for a feature using the transcoder."""
+        match = re.match(r'L(\d+)_F(\d+)', feature_key)
+        if not match:
+            return []
+        layer = int(match.group(1))
+        feature_id = int(match.group(2))
+        try:
+            transcoder = self.model.transcoders[layer]
+            logits = transcoder.W_dec[feature_id]  # shape: [vocab_size]
+            topk = torch.topk(logits, k)
+            token_ids = topk.indices.tolist()
+            scores = topk.values.tolist()
+            tokens = [self.model.tokenizer.decode([tid]) for tid in token_ids]
+            return list(zip(tokens, scores))
+        except Exception as e:
+            return []
+
     def create_feature_heatmap(self, category_features: Dict[str, List]) -> go.Figure:
-        """Create a heatmap showing feature activation patterns across categories."""
-        
+        """Create a heatmap showing feature activation patterns with transcoder token data."""
         # Prepare data
         categories = list(category_features.keys())
         all_features = set()
-        
         for features in category_features.values():
             all_features.update([f[0] for f in features[:10]])  # Top 10 per category
-        
         all_features = sorted(list(all_features))
-        
         # Create matrix
         matrix = np.zeros((len(categories), len(all_features)))
-        
+        # Prepare hover text with transcoder token data
+        hover_text = []
         for i, cat in enumerate(categories):
             cat_features = {f[0]: f[1]['frequency'] * f[1]['avg_activation'] 
                           for f in category_features[cat]}
+            row_hover = []
             for j, feat in enumerate(all_features):
-                matrix[i, j] = cat_features.get(feat, 0)
-        
+                value = cat_features.get(feat, 0)
+                matrix[i, j] = value
+                if value > 0:
+                    tokens_scores = self._get_top_transcoder_tokens(feat, k=5)
+                    if tokens_scores:
+                        token_info = [f"'{tok}': {score:.2f}" for tok, score in tokens_scores]
+                        hover_text_entry = f"<b>{feat}</b><br>Category: {cat}<br>Importance: {value:.3f}<br>Top tokens: {', '.join(token_info)}"
+                    else:
+                        hover_text_entry = f"<b>{feat}</b><br>Category: {cat}<br>Importance: {value:.3f}<br>No transcoder data"
+                else:
+                    hover_text_entry = f"<b>{feat}</b><br>Category: {cat}<br>Importance: 0.000"
+                row_hover.append(hover_text_entry)
+            hover_text.append(row_hover)
         # Create heatmap
         fig = go.Figure(data=go.Heatmap(
             z=matrix,
@@ -45,90 +74,86 @@ class SafetyCircuitVisualizer:
             text=np.round(matrix, 2),
             texttemplate='%{text}',
             textfont={"size": 10},
-            colorbar=dict(title="Importance Score")
+            colorbar=dict(title="Importance Score"),
+            hovertemplate='%{customdata}<extra></extra>',
+            customdata=hover_text
         ))
-        
         fig.update_layout(
-            title="Safety-Relevant Feature Activation Patterns",
+            title="Safety-Relevant Feature Activation Patterns with Transcoder Token Data",
             xaxis_title="Features",
             yaxis_title="Safety Categories",
             height=600,
             width=1200
         )
-        
         return fig
     
-    def create_circuit_comparison_view(self, 
-                                        safe_graph: Graph,
-                                        unsafe_graph: Graph,
-                                        node_threshold: float = 0.8) -> go.Figure:
-        """Create side-by-side comparison of safe vs unsafe circuits."""
+    def create_transcoder_token_table(self, category_features: Dict[str, List]) -> go.Figure:
+        """Create a detailed table showing transcoder tokens for top features."""
         
-        from circuit_tracer.graph import prune_graph
+        table_data = []
         
-        # Prune both graphs
-        safe_nodes, safe_edges, _ = prune_graph(safe_graph, node_threshold)
-        unsafe_nodes, unsafe_edges, _ = prune_graph(unsafe_graph, node_threshold)
+        for category, features in category_features.items():
+            for feature_key, feature_info in features[:5]:  # Top 5 features per category
+                tokens_scores = self._get_top_transcoder_tokens(feature_key, k=5)
+                
+                if tokens_scores:
+                    for i, (token, score) in enumerate(tokens_scores):
+                        table_data.append({
+                            'Category': category,
+                            'Feature': feature_key,
+                            'Transcoder Token': token,
+                            'Score': f"{score:.3f}",
+                            'Rank': i + 1,
+                            'Avg Activation': f"{feature_info['avg_activation']:.3f}",
+                            'Frequency': f"{feature_info['frequency']*100:.1f}%"
+                        })
+                else:
+                    # Add row for features without transcoder data
+                    table_data.append({
+                        'Category': category,
+                        'Feature': feature_key,
+                        'Transcoder Token': 'N/A',
+                        'Score': 'N/A',
+                        'Rank': 'N/A',
+                        'Avg Activation': f"{feature_info['avg_activation']:.3f}",
+                        'Frequency': f"{feature_info['frequency']*100:.1f}%"
+                    })
         
-        # Create network graphs
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=('Safe Response Circuit', 'Unsafe Response Circuit'),
-            specs=[[{"type": "scatter"}, {"type": "scatter"}]]
+        if not table_data:
+            # Create empty table
+            fig = go.Figure(data=go.Table(
+                header=dict(values=['Category', 'Feature', 'Transcoder Token', 'Score', 'Rank', 'Avg Activation', 'Frequency']),
+                cells=dict(values=[[], [], [], [], [], [], []])
+            ))
+            fig.update_layout(title="No transcoder token data available")
+            return fig
+        
+        df = pd.DataFrame(table_data)
+        
+        fig = go.Figure(data=go.Table(
+            header=dict(
+                values=list(df.columns),
+                fill_color='paleturquoise',
+                align='left',
+                font=dict(size=12)
+            ),
+            cells=dict(
+                values=[df[col] for col in df.columns],
+                fill_color='lavender',
+                align='left',
+                font=dict(size=10),
+                height=30
+            )
+        ))
+        
+        fig.update_layout(
+            title="Transcoder Token Activations for Safety Features",
+            height=400,
+            width=1200
         )
         
-        # Helper function to create network visualization
-        def add_network(graph, nodes, edges, row, col, title):
-            # Extract node positions using force-directed layout
-            import networkx as nx
-            
-            G = nx.DiGraph()
-            edge_list = []
-            
-            adj = graph.adjacency_matrix.cpu().numpy()
-            for i in range(len(nodes)):
-                if nodes[i]:
-                    for j in range(len(nodes)):
-                        if nodes[j] and edges[i, j]:
-                            edge_list.append((i, j, adj[i, j]))
-            
-            G.add_weighted_edges_from(edge_list)
-            
-            if len(G.nodes()) > 0:
-                pos = nx.spring_layout(G, k=2, iterations=50)
-                
-                # Add nodes
-                node_x = [pos[node][0] for node in G.nodes()]
-                node_y = [pos[node][1] for node in G.nodes()]
-                
-                fig.add_trace(
-                    go.Scatter(x=node_x, y=node_y,
-                                mode='markers',
-                                marker=dict(size=10, color='lightblue'),
-                                text=[f"Node {i}" for i in G.nodes()],
-                                hoverinfo='text',
-                                showlegend=False),
-                    row=row, col=col
-                )
-                
-                # Add edges
-                for edge in G.edges():
-                    x0, y0 = pos[edge[0]]
-                    x1, y1 = pos[edge[1]]
-                    fig.add_trace(
-                        go.Scatter(x=[x0, x1], y=[y0, y1],
-                                    mode='lines',
-                                    line=dict(width=1, color='gray'),
-                                    showlegend=False),
-                        row=row, col=col
-                    )
-        
-        add_network(safe_graph, safe_nodes, safe_edges, 1, 1, "Safe")
-        add_network(unsafe_graph, unsafe_nodes, unsafe_edges, 1, 2, "Unsafe")
-        
-        fig.update_layout(height=600, title_text="Circuit Structure Comparison")
         return fig
-    
+
     def create_feature_importance_dashboard(self, output_path: Path):
         """Create an interactive HTML dashboard with all visualizations."""
         
@@ -148,6 +173,14 @@ class SafetyCircuitVisualizer:
             except Exception as e:
                 print(f"Warning: Could not create feature heatmap: {e}")
             
+            # Create transcoder token table
+            try:
+                transcoder_table = self.create_transcoder_token_table(category_features)
+                transcoder_table.write_html(output_path / "transcoder_tokens.html")
+                print("✓ Transcoder token table created")
+            except Exception as e:
+                print(f"Warning: Could not create transcoder token table: {e}")
+            
             # Create contrast visualization
             try:
                 contrast_data = []
@@ -163,9 +196,6 @@ class SafetyCircuitVisualizer:
                             })
                 
                 if contrast_data:
-                    import pandas as pd
-                    import plotly.express as px
-                    
                     contrast_df = pd.DataFrame(contrast_data)
                     contrast_fig = px.scatter(
                         contrast_df,
@@ -180,7 +210,6 @@ class SafetyCircuitVisualizer:
                     print("✓ Contrast analysis created")
                 else:
                     # Create empty plot
-                    import plotly.graph_objects as go
                     empty_fig = go.Figure()
                     empty_fig.update_layout(title="No contrastive features found")
                     empty_fig.write_html(output_path / "contrast_analysis.html")
@@ -225,7 +254,7 @@ class SafetyCircuitVisualizer:
                 </style>
             </head>
             <body>
-                <h1>Safety Circuit Discovery Dashboard</h1>
+                <h1>Safety Circuit Discovery Dashboard with Transcoder Analysis</h1>
                 
                 <div class="stats">
                     <div class="stat-box">
@@ -243,8 +272,13 @@ class SafetyCircuitVisualizer:
                 </div>
                 
                 <div class="section">
-                    <h2>Feature Activation Patterns</h2>
+                    <h2>Feature Activation Patterns (Hover for Transcoder Tokens)</h2>
                     <iframe src="feature_heatmap.html"></iframe>
+                </div>
+                
+                <div class="section">
+                    <h2>Transcoder Token Activations</h2>
+                    <iframe src="transcoder_tokens.html"></iframe>
                 </div>
                 
                 <div class="section">

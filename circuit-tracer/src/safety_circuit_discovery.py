@@ -1,6 +1,6 @@
 import torch
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 import numpy as np
 from collections import defaultdict
 from tqdm import tqdm
@@ -23,15 +23,13 @@ class SafetyCircuitAnalyzer:
     def collect_attributions(self, 
                            output_dir: Path,
                            max_feature_nodes: int = 4096,
-                           categories: List[str] = None,
-                           force_recompute: bool = False):
+                           categories: List[str] = None):
         """Run attribution on all benchmark prompts and save graphs.
         
         Args:
             output_dir: Directory to save/load graphs
             max_feature_nodes: Maximum number of feature nodes to consider
             categories: List of categories to process. If None, processes all categories
-            force_recompute: If True, recomputes attributions even if graphs exist
         """
         
         categories = categories or list(set(p.category for p in self.benchmark.prompts))
@@ -46,8 +44,8 @@ class SafetyCircuitAnalyzer:
             for i, safety_prompt in enumerate(tqdm(prompts, desc=f"Processing {category}")):
                 graph_path = cat_dir / f"{category}_{i:03d}.pt"
                 
-                # Skip if graph exists and we're not forcing recomputation
-                if graph_path.exists() and not force_recompute:
+                # Skip if graph exists
+                if graph_path.exists():
                     try:
                         graph = Graph.from_pt(graph_path)
                         self.graphs[f"{category}_{i}"] = graph
@@ -89,16 +87,29 @@ class SafetyCircuitAnalyzer:
         active_features = graph.active_features[graph.selected_features]
         activation_values = graph.activation_values
         
+        # Track unique features per prompt to avoid double-counting
+        prompt_features = set()
+        
         for feat_idx, (layer, pos, feature_id) in enumerate(active_features):
             feature_key = f"L{layer}_F{feature_id}"
             activation = activation_values[feat_idx].item()
             
-            self.feature_stats[safety_prompt.category][feature_key].append({
-                'activation': activation,
-                'position': pos.item(),
-                'prompt': safety_prompt.prompt,
-                'severity': safety_prompt.severity
-            })
+            # Only add if we haven't seen this feature for this prompt yet
+            if feature_key not in prompt_features:
+                prompt_features.add(feature_key)
+                self.feature_stats[safety_prompt.category][feature_key].append({
+                    'activation': activation,
+                    'position': pos.item(),
+                    'prompt': safety_prompt.prompt,
+                    'severity': safety_prompt.severity
+                })
+            else:
+                # If feature already exists for this prompt, update with max activation
+                existing_activations = self.feature_stats[safety_prompt.category][feature_key]
+                for existing in existing_activations:
+                    if existing['prompt'] == safety_prompt.prompt:
+                        existing['activation'] = max(existing['activation'], activation)
+                        break
     
     def find_category_specific_features(self, min_frequency: float = 0.3, 
                                       min_activation: float = 0.1) -> Dict[str, List[str]]:
@@ -111,10 +122,13 @@ class SafetyCircuitAnalyzer:
             feature_frequencies = {}
             
             for feature, activations in self.feature_stats[category].items():
-                # Calculate frequency of activation
-                frequency = len(activations) / prompts_in_category
+                # Calculate frequency of activation - count unique prompts
+                unique_prompts = len(set(a['prompt'] for a in activations))
+                frequency = unique_prompts / prompts_in_category
+                
                 # Calculate average activation strength
                 avg_activation = np.mean([a['activation'] for a in activations])
+                
                 if frequency >= min_frequency and avg_activation >= min_activation:
                     feature_frequencies[feature] = {
                         'frequency': frequency,

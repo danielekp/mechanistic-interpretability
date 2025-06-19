@@ -79,25 +79,24 @@ def main(args):
         miner = CircuitPatternMiner(analyzer.graphs)
         
         for category in category_features.keys():
-            clusters = miner.find_circuit_clusters(category)
-            print(f"  Found {len(clusters)} clusters for {category}")
+            # Extract motifs from graphs in the category
+            if "safe_contrast" in category:
+                category_graphs = [analyzer.graphs[k] for k in analyzer.graphs.keys() 
+                                  if k.startswith(category)]
+            else:
+                category_graphs = [analyzer.graphs[k] for k in analyzer.graphs.keys() 
+                                  if k.startswith(category) and "safe_contrast" not in k]
+            motifs = miner.extract_common_motifs(category_graphs, min_support=args.min_support_motifs)
             
-            # Extract motifs from largest cluster
-            if clusters:
-                largest_cluster = max(clusters.values(), key=len)
-                cluster_graphs = [analyzer.graphs[k] for k in largest_cluster]
-                motifs = miner.extract_common_motifs(cluster_graphs)
-                
-                with open(output_dir / f'{category}_motifs.json', 'w') as f:
-                    json.dump(motifs, f, indent=2)
+            with open(output_dir / f'{category}_motifs.json', 'w') as f:
+                json.dump(motifs, f, indent=2)
     
     # 7. Create visualizations
-    print("\n8. Creating visualizations...")
+    print("\n7. Creating visualizations...")
     visualizer = SafetyCircuitVisualizer(analyzer)
     visualizer.create_feature_importance_dashboard(output_dir / 'dashboard')
     
     print(f"\n✓ Analysis complete! Results saved to {output_dir}")
-    print(f"  View dashboard at: {output_dir / 'dashboard' / 'index.html'}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Safety Circuit Discovery Pipeline")
@@ -119,10 +118,10 @@ if __name__ == "__main__":
                        help='Minimum frequency for category-specific features. Default 0')
     parser.add_argument('--min-activation', type=float, default=0.1,
                        help='Minimum activation for category-specific features. Default 0.1')
-    parser.add_argument('--load-benchmark', type=str, default=None,
-                       help='Path to existing benchmark file. Default None')
     parser.add_argument('--mine-patterns', action='store_true',
                        help='Mine circuit patterns.')
+    parser.add_argument('--min-support-motifs', type=float, default=0.3,
+                       help='Minimum support for motifs. Default 0.3')
     
     args = parser.parse_args()
     main(args)

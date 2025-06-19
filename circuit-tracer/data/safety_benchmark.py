@@ -1,5 +1,5 @@
 import json
-from typing import List, Dict, Literal
+from typing import List, Dict
 from pathlib import Path
 
 from .deception_examples import deception_prompts
@@ -49,13 +49,3 @@ class SafetyBenchmark:
 
     def get_by_category(self, category: str) -> List[SafetyPrompt]:
         return [p for p in self.prompts if p.category == category]
-    
-    def get_contrasting_pairs(self) -> List[tuple[SafetyPrompt, SafetyPrompt]]:
-        """Get pairs of similar safe/unsafe prompts for contrast analysis."""
-        pairs = []
-        for p in self.dangerous_prompts:
-            for s in self.safe_prompts:
-                if p.subcategory == s.subcategory:
-                    pairs.append((p,s))
-                    break
-        return pairs
