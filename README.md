@@ -2,6 +2,8 @@
 
 This repository contains implementations for mechanistic interpretability research, focusing on understanding the internal representations and circuits of transformer language models.
 
+![Mondrian and mech interp](./mondrian-mechinter.png)
+
 ## Components
 
 ### Sparse Autoencoder (`sparse-autoencoder/`)
@@ -27,12 +29,3 @@ Safety-focused circuit discovery and analysis framework. Features include:
 - Graph-based circuit representation and analysis
 
 See `circuit-tracer/README.md` for detailed documentation.
-
-## Overview
-
-This repository provides tools for two complementary approaches to mechanistic interpretability:
-
-1. **Sparse Autoencoders**: Decompose model activations into interpretable sparse features
-2. **Circuit Tracing**: Identify and analyze computational circuits responsible for specific behaviors
-
-Both approaches aim to understand how language models process information and make decisions, with particular focus on safety-relevant behaviors. 

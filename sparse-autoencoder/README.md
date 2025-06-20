@@ -130,3 +130,4 @@ Three primary patching functions are implemented:
 - NumPy
 
 The implementation prioritizes interpretability and experimental flexibility, enabling detailed analysis of transformer internal representations through sparse feature decomposition. 
+More information can be found on my website here: https://danielepace.tech/projects/sae.html.
