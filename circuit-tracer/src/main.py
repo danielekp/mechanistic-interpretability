@@ -76,7 +76,7 @@ def main(args):
     # 6. Mine circuit patterns
     if args.mine_patterns:
         print("\n6. Mining circuit patterns...")
-        miner = CircuitPatternMiner(analyzer.graphs)
+        miner = CircuitPatternMiner()
         
         for category in category_features.keys():
             # Extract motifs from graphs in the category
@@ -86,7 +86,7 @@ def main(args):
             else:
                 category_graphs = [analyzer.graphs[k] for k in analyzer.graphs.keys() 
                                   if k.startswith(category) and "safe_contrast" not in k]
-            motifs = miner.extract_common_motifs(category_graphs, min_support=args.min_support_motifs)
+            motifs = miner.analyze_common_feature_connectivity(category_graphs, min_support=args.min_support_motifs)
             
             with open(output_dir / f'{category}_motifs.json', 'w') as f:
                 json.dump(motifs, f, indent=2)
