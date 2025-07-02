@@ -9,17 +9,113 @@ import pandas as pd
 import numpy as np
 import torch
 import re
-import networkx as nx
 
 from safety_circuit_discovery import SafetyCircuitAnalyzer
+from circuit_tracer.utils import create_graph_files
+from circuit_tracer import serve
 
 class SafetyCircuitVisualizer:
     def __init__(self, analyzer: SafetyCircuitAnalyzer):
         self.analyzer = analyzer
         self.model = analyzer.model
+        self.server = None
+        
+    def _get_feature_context_examples(self, feature_key: str, category: str, max_examples: int = 3) -> List[Dict]:
+        """Get actual context examples where a feature activates, with highlighted tokens."""
+        match = re.match(r'L(\d+)_F(\d+)', feature_key)
+        if not match:
+            return []
+        
+        layer = int(match.group(1))
+        feature_id = int(match.group(2))
+        
+        examples = []
+        
+        # Find graphs where this feature activates
+        for graph_key, graph in self.analyzer.graphs.items():
+            if not graph_key.startswith(category):
+                continue
+                
+            # Get active features for this graph
+            active_features = graph.active_features[graph.selected_features]
+            activation_values = graph.activation_values
+            
+            # Find this specific feature
+            feat_mask = (
+                (active_features[:, 0] == layer) & 
+                (active_features[:, 2] == feature_id)
+            )
+            
+            if not feat_mask.any():
+                continue
+                
+            # Get the position and activation value
+            feat_indices = torch.where(feat_mask)[0]
+            for idx in feat_indices:
+                pos = active_features[idx, 1].item()
+                activation = activation_values[idx].item()
+                
+                # Get token context around this position
+                context = self._get_token_context(graph, pos, window_size=5)
+                
+                examples.append({
+                    'prompt': graph.input_string,
+                    'context': context,
+                    'position': pos,
+                    'activation': activation,
+                    'graph_key': graph_key
+                })
+                
+                if len(examples) >= max_examples:
+                    break
+                    
+            if len(examples) >= max_examples:
+                break
+                
+        return examples
+
+    def _get_token_context(self, graph, position: int, window_size: int = 5) -> str:
+        """Get token context around a specific position with highlighting."""
+        tokens = graph.input_tokens.tolist()
+        decoded_tokens = [self.model.tokenizer.decode([t]) for t in tokens]
+        
+        # Calculate context window
+        start_pos = max(0, position - window_size)
+        end_pos = min(len(decoded_tokens), position + window_size + 1)
+        
+        # Build context with highlighting
+        context_parts = []
+        for i in range(start_pos, end_pos):
+            if i == position:
+                # Highlight the activating token
+                context_parts.append(f"<span style='background-color: #ffeb3b; font-weight: bold;'>{decoded_tokens[i]}</span>")
+            else:
+                context_parts.append(decoded_tokens[i])
+                
+        return "".join(context_parts)
+
+    def _create_context_hover_text(self, feature_key: str, category: str, importance: float) -> str:
+        """Create rich hover text with context examples."""
+        # Get context examples
+        context_examples = self._get_feature_context_examples(feature_key, category, max_examples=2)
+        
+        # Build hover text
+        hover_parts = [
+            f"<b>{feature_key}</b>",
+            f"Category: {category}",
+            f"Importance: {importance:.3f}"
+        ]
+        
+        if context_examples:
+            hover_parts.append("<br><b>Context Examples:</b>")
+            for i, example in enumerate(context_examples, 1):
+                hover_parts.append(f"<br><b>Example {i}:</b> (pos {example['position']}, activation {example['activation']:.2f})")
+                hover_parts.append(f"<br>{example['context']}")
+        
+        return "<br>".join(hover_parts)
 
     def create_feature_heatmap(self, category_features: Dict[str, List]) -> go.Figure:
-        """Create a heatmap showing feature activation patterns."""
+        """Create a heatmap showing feature activation patterns with rich context data."""
         # Prepare data
         categories = list(category_features.keys())
         all_features = set()
@@ -30,7 +126,7 @@ class SafetyCircuitVisualizer:
         # Create matrix
         matrix = np.zeros((len(categories), len(all_features)))
         
-        # Prepare hover text
+        # Prepare hover text with rich context data
         hover_text = []
         for i, cat in enumerate(categories):
             cat_features = {f[0]: f[1]['frequency'] * f[1]['avg_activation'] 
@@ -41,7 +137,7 @@ class SafetyCircuitVisualizer:
                 matrix[i, j] = value
                 
                 if value > 0:
-                    hover_text_entry = f"<b>{feat}</b><br>Category: {cat}<br>Importance: {value:.3f}"
+                    hover_text_entry = self._create_context_hover_text(feat, cat, value)
                 else:
                     hover_text_entry = f"<b>{feat}</b><br>Category: {cat}<br>Importance: 0.000"
                 row_hover.append(hover_text_entry)
@@ -62,7 +158,7 @@ class SafetyCircuitVisualizer:
         ))
         
         fig.update_layout(
-            title="Safety-Relevant Feature Activation Patterns",
+            title="Safety-Relevant Feature Activation Patterns with Context Examples",
             xaxis_title="Features",
             yaxis_title="Safety Categories",
             height=600,
@@ -71,117 +167,7 @@ class SafetyCircuitVisualizer:
         
         return fig
 
-    def create_graph_visualization(self, graph_key: str, max_nodes: int = 50) -> go.Figure:
-        """Create an interactive graph visualization for a specific attribution graph."""
-        if graph_key not in self.analyzer.graphs:
-            raise ValueError(f"Graph {graph_key} not found")
-        
-        graph = self.analyzer.graphs[graph_key]
-        
-        # Get active features and their activations
-        active_features = graph.active_features[graph.selected_features]
-        activation_values = graph.activation_values
-        
-        # Limit number of nodes for visualization
-        if len(active_features) > max_nodes:
-            # Sort by activation value and take top nodes
-            sorted_indices = torch.argsort(activation_values, descending=True)[:max_nodes]
-            active_features = active_features[sorted_indices]
-            activation_values = activation_values[sorted_indices]
-        
-        # Create networkx graph
-        G = nx.DiGraph()
-        
-        # Add nodes
-        node_labels = {}
-        node_sizes = []
-        node_colors = []
-        
-        for i, (layer, pos, feature_id) in enumerate(active_features):
-            node_id = f"L{layer}_F{feature_id}"
-            activation = activation_values[i].item()
-            
-            G.add_node(node_id)
-            node_labels[node_id] = f"{node_id}<br>Act: {activation:.3f}"
-            node_sizes.append(max(10, activation * 50))  # Scale node size by activation
-            node_colors.append(activation)
-        
-        # Add edges from adjacency matrix
-        adj = graph.adjacency_matrix
-        edge_weights = []
-        
-        for i in range(len(active_features)):
-            for j in range(len(active_features)):
-                if i != j and adj[i, j] > 0.1:  # Threshold for significant connections
-                    node_i = f"L{active_features[i, 0].item()}_F{active_features[i, 2].item()}"
-                    node_j = f"L{active_features[j, 0].item()}_F{active_features[j, 2].item()}"
-                    
-                    weight = adj[i, j].item()
-                    G.add_edge(node_i, node_j, weight=weight)
-                    edge_weights.append(weight)
-        
-        # Use spring layout for positioning
-        pos = nx.spring_layout(G, k=1, iterations=50)
-        
-        # Extract positions
-        node_x = []
-        node_y = []
-        for node in G.nodes():
-            x, y = pos[node]
-            node_x.append(x)
-            node_y.append(y)
-        
-        # Create edge traces
-        edge_traces = []
-        for edge in G.edges(data=True):
-            x0, y0 = pos[edge[0]]
-            x1, y1 = pos[edge[1]]
-            weight = edge[2]['weight']
-            
-            edge_trace = go.Scatter(
-                x=[x0, x1, None], y=[y0, y1, None],
-                line=dict(width=weight * 5, color='gray'),
-                hoverinfo='none',
-                mode='lines',
-                showlegend=False
-            )
-            edge_traces.append(edge_trace)
-        
-        # Create node trace
-        node_trace = go.Scatter(
-            x=node_x, y=node_y,
-            mode='markers+text',
-            hoverinfo='text',
-            text=[node_labels[node] for node in G.nodes()],
-            textposition="top center",
-            marker=dict(
-                size=node_sizes,
-                color=node_colors,
-                colorscale='Viridis',
-                showscale=True,
-                colorbar=dict(title="Activation Value"),
-                line=dict(width=2, color='white')
-            ),
-            showlegend=False
-        )
-        
-        # Create figure
-        fig = go.Figure(data=edge_traces + [node_trace])
-        
-        fig.update_layout(
-            title=f"Attribution Graph: {graph_key}<br>Input: {graph.input_string[:100]}...",
-            showlegend=False,
-            hovermode='closest',
-            margin=dict(b=20,l=5,r=5,t=40),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            height=600,
-            width=800
-        )
-        
-        return fig
-
-    def create_feature_importance_dashboard(self, output_path: Path):
+    def create_feature_importance_dashboard(self, output_path: Path, node_threshold: float = 0.8, edge_threshold: float = 0.98):
         """Create an interactive HTML dashboard with all visualizations."""
         
         try:
@@ -192,11 +178,19 @@ class SafetyCircuitVisualizer:
             # Create output directory
             output_path.mkdir(exist_ok=True, parents=True)
             
+            # Create attribution graph files
+            try:
+                graph_metadata = self.create_attribution_graph_files(output_path, node_threshold, edge_threshold)
+                print("✓ Attribution graph files created")
+            except Exception as e:
+                print(f"Warning: Could not create attribution graph files: {e}")
+                graph_metadata = {}
+            
             # Create feature heatmap
             try:
                 heatmap = self.create_feature_heatmap(category_features)
                 heatmap.write_html(output_path / "feature_heatmap.html")
-                print("✓ Feature heatmap created")
+                print("✓ Enhanced feature heatmap created")
             except Exception as e:
                 print(f"Warning: Could not create feature heatmap: {e}")
             
@@ -236,24 +230,6 @@ class SafetyCircuitVisualizer:
             except Exception as e:
                 print(f"Warning: Could not create contrast analysis: {e}")
             
-            # Create graph visualizations for each graph
-            graph_files = {}
-            available_graphs = []
-            try:
-                # Create graphs for all available graphs (not just first 10)
-                for graph_key in self.analyzer.graphs.keys():
-                    try:
-                        fig = self.create_graph_visualization(graph_key)
-                        graph_filename = f"graph_{graph_key}.html"
-                        fig.write_html(output_path / graph_filename)
-                        graph_files[graph_key] = graph_filename
-                        available_graphs.append(graph_key)
-                        print(f"✓ Created graph visualization: {graph_filename}")
-                    except Exception as e:
-                        print(f"Warning: Could not create graph for {graph_key}: {e}")
-            except Exception as e:
-                print(f"Warning: Could not create graph visualizations: {e}")
-            
             # Calculate statistics
             total_features = sum(len(feats) for feats in category_features.values())
             total_prompts = len(self.analyzer.graphs)
@@ -273,12 +249,12 @@ class SafetyCircuitVisualizer:
             if not findings:
                 findings.append("<li>No category-specific features found with current thresholds.</li>")
             
-            # Create main dashboard HTML with embedded graph visualization
+            # Create main dashboard HTML (with properly escaped CSS)
             dashboard_html = """
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Safety Circuit Analysis Dashboard</title>
+                <title>Enhanced Safety Circuit Analysis Dashboard</title>
                 <style>
                     body {{ font-family: Arial, sans-serif; margin: 20px; }}
                     h1 {{ color: #333; }}
@@ -288,51 +264,13 @@ class SafetyCircuitVisualizer:
                     .stat-box {{ text-align: center; padding: 20px; background: #f0f0f0; }}
                     .stat-value {{ font-size: 36px; font-weight: bold; color: #2196F3; }}
                     .stat-label {{ color: #666; margin-top: 10px; }}
-                    .graph-controls {{ 
-                        margin: 20px 0; 
-                        padding: 15px; 
-                        background: #f8f9fa; 
-                        border-radius: 5px; 
-                    }}
-                    .graph-controls select {{ 
-                        padding: 8px 12px; 
-                        font-size: 14px; 
-                        border: 1px solid #ddd; 
-                        border-radius: 4px; 
-                        margin-right: 10px; 
-                    }}
-                    .graph-controls button {{ 
-                        padding: 8px 16px; 
-                        background: #007bff; 
-                        color: white; 
-                        border: none; 
-                        border-radius: 4px; 
-                        cursor: pointer; 
-                    }}
-                    .graph-controls button:hover {{ background: #0056b3; }}
-                    .graph-container {{ 
-                        border: 1px solid #ddd; 
-                        border-radius: 5px; 
-                        padding: 10px; 
-                        background: white; 
-                    }}
-                    .no-graph {{ 
-                        text-align: center; 
-                        padding: 100px; 
-                        color: #666; 
-                        font-style: italic; 
-                    }}
-                    .debug-info {{ 
-                        font-size: 12px; 
-                        color: #666; 
-                        margin-top: 10px; 
-                        font-style: italic; 
-                    }}
+                    .feature {{ background-color: #ffeb3b; font-weight: bold; }}
+                    .info-box {{ background-color: #e3f2fd; padding: 15px; border-radius: 5px; margin: 10px 0; }}
+                    .server-info {{ background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 10px 0; border-left: 4px solid #ffc107; }}
                 </style>
-                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
             </head>
             <body>
-                <h1>Safety Circuit Discovery Dashboard</h1>
+                <h1>Safety Circuit Discovery Dashboard with Context Analysis</h1>
                 
                 <div class="stats">
                     <div class="stat-box">
@@ -350,7 +288,8 @@ class SafetyCircuitVisualizer:
                 </div>
                 
                 <div class="section">
-                    <h2>Feature Activation Patterns</h2>
+                    <h2>Feature Activation Patterns with Context Examples</h2>
+                    <p><em>Hover over cells to see actual context examples with highlighted activating tokens</em></p>
                     <iframe src="feature_heatmap.html"></iframe>
                 </div>
                 
@@ -361,34 +300,40 @@ class SafetyCircuitVisualizer:
                 </div>
                 
                 <div class="section">
-                    <h2>Visualize Graphs</h2>
-                    <p><em>Explore individual attribution graphs to understand feature connectivity patterns</em></p>
+                    <h2>Attribution Graph Visualization</h2>
+                    <div class="server-info">
+                        <h3>🚀 Interactive Graph Visualization</h3>
+                        <p><strong>To view attribution graphs:</strong></p>
+                        <ol>
+                            <li>Open a terminal in the project directory</li>
+                            <li>Run: <code>python src/start_visualization_server.py</code></li>
+                            <li>A browser tab will open automatically with the interactive graph viewer</li>
+                            <li>Use the dropdown below to select different prompts and explore their attribution graphs</li>
+                        </ol>
+                        <p><strong>Server URL:</strong> <a href="http://localhost:8032" target="_blank">http://localhost:8032</a></p>
+                        <p><strong>Alternative:</strong> You can also run: <code>python -c "from circuit_tracer import serve; serve('safety_analysis_results/dashboard/graph_files', port=8032)"</code></p>
+                    </div>
                     
-                    <div class="graph-controls">
-                        <label for="graph-select">Select a prompt:</label>
-                        <select id="graph-select">
-                            <option value="">Choose a prompt...</option>
+                    <div style="margin-bottom: 20px;">
+                        <label for="graphSelect" style="font-weight: bold; margin-right: 10px;">Available Prompts:</label>
+                        <select id="graphSelect" style="padding: 8px; font-size: 14px; width: 300px;" onchange="openGraph()">
+                            <option value="">Choose a prompt to visualize...</option>
                             {graph_options}
                         </select>
-                        <button onclick="loadGraph()">Load Graph</button>
+                        <button onclick="openSelectedGraph()" style="padding: 8px 16px; font-size: 14px; background-color: #4CAF50; color: white; border: none; border-radius: 3px; cursor: pointer; margin-left: 10px;">
+                            🔍 View Graph
+                        </button>
                     </div>
                     
-                    <div class="graph-container">
-                        <div id="graph-display" class="no-graph">
-                            Select a prompt above to view its attribution graph
-                        </div>
+                    <div class="info-box">
+                        <h4>How to use the attribution graphs:</h4>
+                        <ul>
+                            <li><strong>Nodes:</strong> Represent tokens (words/subwords) in the input</li>
+                            <li><strong>Edges:</strong> Show how features influence token predictions</li>
+                            <li><strong>Colors:</strong> Indicate activation strength and feature importance</li>
+                            <li><strong>Hover:</strong> Get detailed information about nodes and edges</li>
+                        </ul>
                     </div>
-                    
-                    <div class="debug-info">
-                        Available graphs: {num_available_graphs} | Total graphs: {total_prompts}
-                    </div>
-                    
-                    <p>Each graph shows:</p>
-                    <ul>
-                        <li><strong>Nodes:</strong> Individual features (colored by activation strength)</li>
-                        <li><strong>Edges:</strong> Connections between features (thickness indicates connection strength)</li>
-                        <li><strong>Layout:</strong> Spring-based positioning for optimal visibility</li>
-                    </ul>
                 </div>
                 
                 <div class="section">
@@ -398,30 +343,39 @@ class SafetyCircuitVisualizer:
                     </ul>
                 </div>
                 
+                <div class="section">
+                    <h2>How to Use This Dashboard</h2>
+                    <ol>
+                        <li><strong>Feature Heatmap:</strong> Hover over colored cells to see detailed information about each feature, including context examples</li>
+                        <li><strong>Context Examples:</strong> Yellow-highlighted tokens show exactly where each feature activates in the original prompts</li>
+                        <li><strong>Contrast Analysis:</strong> Identify features that differentiate between harmful and safe content</li>
+                        <li><strong>Attribution Graphs:</strong> Start the server and select a prompt to view its detailed attribution graph showing feature interactions</li>
+                    </ol>
+                </div>
+                
                 <script>
-                    const graphFiles = {graph_files_json};
-                    console.log('Available graph files:', graphFiles);
-                    
-                    function loadGraph() {{
-                        const select = document.getElementById('graph-select');
-                        const graphKey = select.value;
-                        const display = document.getElementById('graph-display');
+                    function openSelectedGraph() {{
+                        const select = document.getElementById('graphSelect');
+                        const selectedValue = select.value;
                         
-                        console.log('Selected graph key:', graphKey);
-                        console.log('Available files:', Object.keys(graphFiles));
-                        
-                        if (!graphKey) {{
-                            display.innerHTML = '<div class="no-graph">Select a prompt above to view its attribution graph</div>';
+                        if (!selectedValue) {{
+                            alert('Please select a prompt first!');
                             return;
                         }}
                         
-                        if (graphFiles[graphKey]) {{
-                            console.log('Loading graph file:', graphFiles[graphKey]);
-                            // Load the graph iframe
-                            display.innerHTML = `<iframe src="${{graphFiles[graphKey]}}" width="100%" height="600px" frameborder="0"></iframe>`;
-                        }} else {{
-                            console.log('Graph file not found for key:', graphKey);
-                            display.innerHTML = '<div class="no-graph">Graph not available for this prompt</div>';
+                        // Open the specific graph in the server
+                        const graphUrl = `http://localhost:8032?graph=${{selectedValue}}_graph`;
+                        window.open(graphUrl, '_blank');
+                    }}
+                    
+                    function openGraph() {{
+                        // This function is called when the dropdown changes
+                        // We'll just update the button text or provide feedback
+                        const select = document.getElementById('graphSelect');
+                        const selectedValue = select.value;
+                        
+                        if (selectedValue) {{
+                            console.log('Selected graph:', selectedValue);
                         }}
                     }}
                 </script>
@@ -429,13 +383,14 @@ class SafetyCircuitVisualizer:
             </html>
             """
             
-            # Generate graph options for dropdown (only for available graphs)
+            # Generate graph options for dropdown
             graph_options = []
-            for graph_key in sorted(available_graphs):
-                graph = self.analyzer.graphs[graph_key]
-                # Truncate input string for display
-                input_preview = graph.input_string[:80] + "..." if len(graph.input_string) > 80 else graph.input_string
-                graph_options.append(f'<option value="{graph_key}">{graph_key}: {input_preview}</option>')
+            for graph_key, metadata in graph_metadata.items():
+                category = metadata.get('category', 'unknown')
+                input_preview = metadata.get('input_string', 'No preview available')
+                graph_options.append(
+                    f'<option value="{graph_key}">{category}: {input_preview}</option>'
+                )
             
             # Fill template
             html = dashboard_html.format(
@@ -443,20 +398,41 @@ class SafetyCircuitVisualizer:
                 total_prompts=total_prompts,
                 categories=categories,
                 findings='\n'.join(findings),
-                graph_options='\n'.join(graph_options),
-                graph_files_json=json.dumps(graph_files),
-                num_available_graphs=len(available_graphs)
+                graph_options='\n'.join(graph_options)
             )
             
             with open(output_path / "index.html", 'w') as f:
                 f.write(html)
             
-            print(f"✓ Dashboard created at {output_path / 'index.html'}")
+            print(f"✓ Enhanced dashboard created at {output_path / 'index.html'}")
+            print(f"✓ To view attribution graphs, run: python src/start_visualization_server.py")
             
         except Exception as e:
             print(f"Error creating dashboard: {e}")
             # Create basic fallback
             self._create_basic_fallback_dashboard(output_path)
+
+    def _start_visualization_server(self, data_dir: Path):
+        """Start the visualization server for attribution graphs."""
+        try:
+            if self.server is None:
+                self.server = serve(data_dir, port=8032)
+                print(f"✓ Visualization server started at http://localhost:8032")
+                print(f"  Data directory: {data_dir}")
+                print(f"  Open your browser to view interactive attribution graphs")
+            else:
+                print("✓ Visualization server already running")
+        except Exception as e:
+            print(f"Warning: Could not start visualization server: {e}")
+            print("  You can manually start the server using:")
+            print(f"  python -c \"from circuit_tracer import serve; serve('{data_dir}', port=8032)\"")
+
+    def stop_server(self):
+        """Stop the visualization server."""
+        if self.server:
+            self.server.stop()
+            self.server = None
+            print("✓ Visualization server stopped")
 
     def _create_basic_fallback_dashboard(self, output_path: Path):
         """Create a basic dashboard when full dashboard creation fails."""
@@ -475,6 +451,8 @@ class SafetyCircuitVisualizer:
                 <li>contrasting_features.json</li>
                 <li>*_motifs.json</li>
             </ul>
+            <p>To view attribution graphs, run:</p>
+            <code>python -c "from circuit_tracer import serve; serve('graph_files', port=8032)"</code>
         </body>
         </html>
         """
@@ -483,3 +461,47 @@ class SafetyCircuitVisualizer:
             f.write(basic_html)
         
         print(f"✓ Basic fallback dashboard created at {output_path / 'index.html'}")
+
+    def create_attribution_graph_files(self, output_path: Path, node_threshold: float = 0.8, edge_threshold: float = 0.98):
+        """Create graph files for attribution visualization for each prompt."""
+        graph_files_dir = output_path / "graph_files"
+        graph_files_dir.mkdir(exist_ok=True, parents=True)
+        
+        print("Creating attribution graph files...")
+        
+        # Create a mapping of graph keys to their metadata
+        graph_metadata = {}
+        
+        for graph_key, graph in self.analyzer.graphs.items():
+            try:
+                # Create a slug for the graph
+                slug = f"{graph_key}_graph"
+                
+                # Create graph files
+                create_graph_files(
+                    graph_or_path=graph,
+                    slug=slug,
+                    output_path=graph_files_dir,
+                    node_threshold=node_threshold,
+                    edge_threshold=edge_threshold
+                )
+                
+                # Store metadata for the dropdown
+                graph_metadata[graph_key] = {
+                    'slug': slug,
+                    'input_string': graph.input_string[:100] + "..." if len(graph.input_string) > 100 else graph.input_string,
+                    'category': graph_key.split('_')[0] if '_' in graph_key else 'unknown'
+                }
+                
+                print(f"✓ Created graph files for {graph_key}")
+                
+            except Exception as e:
+                print(f"Warning: Could not create graph files for {graph_key}: {e}")
+                continue
+        
+        # Save metadata for the dashboard
+        with open(graph_files_dir / "graph_metadata.json", 'w') as f:
+            json.dump(graph_metadata, f, indent=2)
+        
+        print(f"✓ Created {len(graph_metadata)} graph files in {graph_files_dir}")
+        return graph_metadata

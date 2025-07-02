@@ -94,7 +94,11 @@ def main(args):
     # 7. Create visualizations
     print("\n7. Creating visualizations...")
     visualizer = SafetyCircuitVisualizer(analyzer)
-    visualizer.create_feature_importance_dashboard(output_dir / 'dashboard')
+    visualizer.create_feature_importance_dashboard(
+        output_dir / 'dashboard',
+        node_threshold=args.node_threshold,
+        edge_threshold=args.edge_threshold
+    )
     
     print(f"\n✓ Analysis complete! Results saved to {output_dir}")
 
@@ -122,6 +126,10 @@ if __name__ == "__main__":
                        help='Mine circuit patterns.')
     parser.add_argument('--min-support-motifs', type=float, default=0.3,
                        help='Minimum support for motifs. Default 0.3')
+    parser.add_argument('--node-threshold', type=float, default=0.8,
+                       help='Node threshold for attribution graphs. Default 0.8')
+    parser.add_argument('--edge-threshold', type=float, default=0.98,
+                       help='Edge threshold for attribution graphs. Default 0.98')
     
     args = parser.parse_args()
     main(args)
