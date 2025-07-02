@@ -41,7 +41,7 @@ class CircuitPatternMiner:
             incoming_patterns = defaultdict(list)  # Changed from int to list
             outgoing_patterns = defaultdict(list)  # Changed from int to list
             
-            for graph in tqdm(cluster_graphs, desc=f"Processing graphs for feature {feat[2]}", leave=False):
+            for graph in cluster_graphs:
                 # Find this feature in the graph
                 active_features = graph.active_features[graph.selected_features]
                 feat_mask = (
