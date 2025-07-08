@@ -18,9 +18,9 @@ Implementation of sparse autoencoders for analyzing transformer activations. Fea
 
 See `sparse-autoencoder/README.md` for detailed documentation.
 
-### Circuit Tracer (`circuit-tracer/`)
+### Circuit Tracer Playground (`circuit-tracer-playground/`)
 
-Safety-focused circuit discovery and analysis framework. Features include:
+Safety-focused circuit discovery and analysis framework using ![circuit-tracer](https://github.com/safety-research/circuit-tracer) library. Features include:
 
 - Automated circuit pattern mining across model layers
 - Safety benchmark evaluation (deception, harmful content, manipulation, power-seeking)
@@ -28,4 +28,4 @@ Safety-focused circuit discovery and analysis framework. Features include:
 - Interactive dashboard for circuit visualization
 - Graph-based circuit representation and analysis
 
-See `circuit-tracer/README.md` for detailed documentation.
+See `circuit-tracer-playground/README.md` for detailed documentation.
