@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 
@@ -8,7 +10,7 @@ class Gemma3TextScaledWordEmbedding(nn.Module):
     - The hidden size is 2304 because it is divisible for a lot of numbers (more
     than powers of two), so it is easy to explore different values for the number
     of different heads.
-    - The scaled is applied to stabilize the values. 48 is equal to the sqrt(hidden_size)
+    - The scaled is applied to stabilize the values.
     """
     def __init__(self, vocab_size: int = 262208, hidden_size: int = 2304, padding_idx: int = 0): 
         super().__init__()
@@ -17,6 +19,6 @@ class Gemma3TextScaledWordEmbedding(nn.Module):
         self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=padding_idx)
 
     def forward(self, input_ids: torch.LongTensor) -> torch.Tensor:
-        return self.embedding(input_ids) * 48.0 
+        return self.embedding(input_ids) * math.sqrt(self.hidden_size)
 
   
