@@ -12,9 +12,8 @@ class Gemma3TextScaledWordEmbedding(nn.Module):
     of different heads.
     - The scaled is applied to stabilize the values.
     """
-    def __init__(self, vocab_size: int = 262208, hidden_size: int = 2304, padding_idx: int = 0): 
+    def __init__(self, vocab_size: int = 262208, hidden_size: int = 1152, padding_idx: int = 0): 
         super().__init__()
-        self.vocab_size = vocab_size
         self.hidden_size = hidden_size
         self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=padding_idx)
 
