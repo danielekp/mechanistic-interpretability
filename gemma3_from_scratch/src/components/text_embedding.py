@@ -1,7 +1,7 @@
 import math
 
 import torch
-from torch import nn
+import torch.nn as nn
 
 class Gemma3TextScaledWordEmbedding(nn.Module):
     """Embedding for Gemma3 model.
@@ -14,6 +14,7 @@ class Gemma3TextScaledWordEmbedding(nn.Module):
     """
     def __init__(self, vocab_size: int = 262208, hidden_size: int = 1152, padding_idx: int = 0): 
         super().__init__()
+
         self.hidden_size = hidden_size
         self.embedding = nn.Embedding(vocab_size, hidden_size, padding_idx=padding_idx)
 
